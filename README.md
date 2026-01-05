@@ -249,6 +249,15 @@ novelai-artist-elo/
 - Verify your API key is correct
 - Check your internet connection
 
+### Windows: Compilation errors during pip install
+If you see errors like `Unknown compiler(s): [['cl'], ['gcc'], ['clang']...]` when installing dependencies, you're missing C++ build tools.
+
+**Fix:**
+1. Download [Microsoft Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+2. Run the installer and select **"Desktop development with C++"** workload
+3. Install and restart your terminal
+4. Try `pip install -r requirements.txt` again
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
