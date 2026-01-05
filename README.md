@@ -5,16 +5,6 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-## Screenshots
-
-| Comparison View | Leaderboard |
-|-----------------|-------------|
-| ![Picker](screenshots/picker.png) | ![Leaderboard](screenshots/leaderboard.png) |
-
-| Custom Prompts | Pool Statistics |
-|----------------|-----------------|
-| ![Custom Prompt](screenshots/custom_prompt.png) | ![Stats](screenshots/stats.png) |
-
 ## Features
 
 - **Blind Comparisons**: Compare two AI-generated images without seeing which artists were used (toggleable)
@@ -82,7 +72,11 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
    The application will automatically open your browser to `http://127.0.0.1:7860`
 
 3. **Compare images**
-   - Two images will be generated with different artist combinations (1-3 artists each)
+
+   Two images will be generated with different artist combinations (1-3 artists each). Pick your preferred image to update the ELO ratings.
+
+   ![Comparison View](screenshots/picker.png)
+
    - Click "Pick Image A" or "Pick Image B" to vote for your preferred image
    - Use keyboard shortcuts for faster voting:
      - `1` - Pick Image A
@@ -92,11 +86,9 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 
 4. **View rankings**
 
-   The leaderboard on the right shows:
-   - Top 30 artists by ELO rating
-   - Win rates with group size breakdown
-   - Pool health statistics
-   - Recent rotation activity
+   The leaderboard on the right shows the top artists by ELO rating, along with their win rates and comparison counts.
+
+   ![Leaderboard](screenshots/leaderboard.png)
 
 ### Understanding the Leaderboard
 
@@ -114,9 +106,23 @@ Each artist entry shows:
 
 This breakdown helps identify artists who perform better alone vs. in combinations.
 
+### Pool Health & Statistics
+
+The statistics panel shows the current state of your artist pool and ranking progress.
+
+![Pool Statistics](screenshots/stats.png)
+
+- **Comparisons**: Total number of comparisons made
+- **Artists rated**: How many unique artists have been evaluated
+- **Pool**: Current active pool size vs total available artists
+- **Pool Health**: Breakdown of artists above/below average and newcomers
+- **Most likely to rotate out**: Artists at risk of being removed from the pool
+
 ### Custom Prompts
 
 You can use your own prompts instead of the default one. Click the "Custom Prompt (Optional)" accordion to expand the prompt editor.
+
+![Custom Prompt Editor](screenshots/custom_prompt.png)
 
 **How it works:**
 - Write any NovelAI prompt you want to use for comparisons
