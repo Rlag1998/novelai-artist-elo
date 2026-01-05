@@ -681,12 +681,13 @@ async def generate_comparison_pair(
     path_b = output_dir / f"compare_{timestamp}_b.png"
 
     print(f"Generating image A with artists: {artists_a}")
-    print(f"Prompt A: {prompt_a[:200]}...")
-    success_a = await generate_image(session, prompt_a, path_a)
-
     print(f"Generating image B with artists: {artists_b}")
-    print(f"Prompt B: {prompt_b[:200]}...")
-    success_b = await generate_image(session, prompt_b, path_b)
+
+    # Generate both images in parallel for faster results
+    success_a, success_b = await asyncio.gather(
+        generate_image(session, prompt_a, path_a),
+        generate_image(session, prompt_b, path_b)
+    )
 
     if success_a and success_b:
         return path_a, path_b, artists_a, artists_b
