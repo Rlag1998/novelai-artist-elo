@@ -5,6 +5,16 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+## Screenshots
+
+| Comparison View | Leaderboard |
+|-----------------|-------------|
+| ![Picker](screenshots/picker.png) | ![Leaderboard](screenshots/leaderboard.png) |
+
+| Custom Prompts | Pool Statistics |
+|----------------|-----------------|
+| ![Custom Prompt](screenshots/custom_prompt.png) | ![Stats](screenshots/stats.png) |
+
 ## Features
 
 - **Blind Comparisons**: Compare two AI-generated images without seeing which artists were used (toggleable)
@@ -26,7 +36,7 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/novelai-artist-elo.git
+   git clone https://github.com/Rlag1998/novelai-artist-elo.git
    cd novelai-artist-elo
    ```
 
@@ -103,6 +113,33 @@ Each artist entry shows:
 - **T:67%(8)** - Trio win rate: 67% when in a group of 3 artists (8 trio comparisons)
 
 This breakdown helps identify artists who perform better alone vs. in combinations.
+
+### Custom Prompts
+
+You can use your own prompts instead of the default one. Click the "Custom Prompt (Optional)" accordion to expand the prompt editor.
+
+**How it works:**
+- Write any NovelAI prompt you want to use for comparisons
+- The system will automatically insert artist tags into your prompt
+- If your prompt contains `{artist_placeholder}`, artist tags replace that marker
+- If no placeholder exists, artist tags are appended to the end
+
+**Example custom prompt:**
+```
+1boy, fantasy warrior, armor, castle background, dramatic lighting, {artist_placeholder}, masterpiece
+```
+
+**Tips for custom prompts:**
+- Keep prompts consistent during a ranking session for fair comparisons
+- Use `{artist_placeholder}` to control exactly where artist tags appear
+- The same prompt is used for both images in a comparison (only the artists differ)
+- Leave empty to use the built-in default prompt
+- Any existing `artist:` tags in your prompt are automatically removed and replaced
+
+**Why use custom prompts?**
+- Test how artists perform with specific subjects (e.g., landscapes vs portraits)
+- Evaluate artist styles for your particular use case
+- Compare artists on content you actually care about generating
 
 ## Artist Tags File
 
