@@ -88,7 +88,7 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 
    The leaderboard on the right shows the top artists by ELO rating, along with their win rates and comparison counts.
 
-   ![Leaderboard](screenshots/leaderboard.png)
+   <img src="screenshots/leaderboard.png" width="350">
 
 ### Understanding the Leaderboard
 
@@ -110,7 +110,7 @@ This breakdown helps identify artists who perform better alone vs. in combinatio
 
 The statistics panel shows the current state of your artist pool and ranking progress.
 
-![Pool Statistics](screenshots/stats.png)
+<img src="screenshots/stats.png" width="400">
 
 - **Comparisons**: Total number of comparisons made
 - **Artists rated**: How many unique artists have been evaluated
