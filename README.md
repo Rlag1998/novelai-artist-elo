@@ -12,10 +12,11 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 - **Active Pool Management**: Maintains a pool of ~150 artists for efficient ranking discovery
 - **Smart Rotation**: Low performers are probabilistically rotated out; high ELO artists are more likely to return
 - **Win Rate Statistics**: Track solo, duo, and trio performance for each artist
+- **Multiple Profiles**: Save and load different ranking profiles with separate ELO data and prompt settings
 - **Undo Support**: Revert the last comparison if you change your mind
 - **Keyboard Shortcuts**: Quick voting with `1`, `2`, `s` (skip), and `0` (undo)
-- **Custom Prompts**: Use your own positive and negative prompts
-- **Generation Settings**: Toggle quality tags, choose from 4 UC (Undesired Content) presets
+- **Custom Prompts**: Use your own positive and negative prompts (auto-saved per profile)
+- **Generation Settings**: Toggle quality tags, choose from 5 UC (Undesired Content) presets including "None"
 - **Export to CSV**: Download full leaderboard with detailed stats
 - **Recent History**: View your last 10 comparison results
 
@@ -120,6 +121,26 @@ The statistics panel shows the current state of your artist pool and ranking pro
 - **Pool**: Current active pool size vs total available artists
 - **Pool Health**: Breakdown of artists above/below average and newcomers
 - **Most likely to rotate out**: Artists at risk of being removed from the pool
+
+### Profiles
+
+Create multiple ranking profiles to maintain separate ELO rankings with different prompt settings:
+
+1. **Create a Profile**: Enter a name in the "New Profile Name" field and click "Create"
+2. **Switch Profiles**: Select a profile from the dropdown to load its rankings and settings
+3. **Delete a Profile**: Select a profile and click "Delete" to remove it
+
+Each profile stores:
+- All ELO ratings and comparison history
+- Active artist pool
+- Custom prompt settings (positive prompt, negative prompt, quality toggle, UC preset)
+
+Settings are auto-saved when you change them, so your prompts persist across sessions.
+
+**Use cases:**
+- Separate rankings for different art styles (anime vs realistic)
+- Test different prompt strategies without affecting main rankings
+- Share profile data with others (copy the `profiles/<name>/` folder)
 
 ### Export to CSV
 
@@ -237,11 +258,14 @@ The application creates/uses several JSON files:
 
 | File | Purpose |
 |------|---------|
-| `artist_elo_ratings.json` | ELO ratings and comparison counts |
-| `active_pool.json` | Current 150-artist active pool |
-| `comparison_history.json` | Full history of all comparisons |
+| `profiles/<name>/artist_elo_ratings.json` | ELO ratings and comparison counts (per profile) |
+| `profiles/<name>/active_pool.json` | Current 150-artist active pool (per profile) |
+| `profiles/<name>/comparison_history.json` | Full history of all comparisons (per profile) |
+| `profiles/<name>/settings.json` | Saved prompt settings (per profile) |
 
-These files are automatically created on first run and persist your rankings across sessions.
+These files are automatically created when you create a profile and persist your rankings across sessions.
+
+> **Note**: Legacy files (`artist_elo_ratings.json`, `active_pool.json`, `comparison_history.json` in root) are used when no profile is selected, for backwards compatibility.
 
 ## Project Structure
 
@@ -257,9 +281,12 @@ novelai-artist-elo/
 ├── README.md                # This file
 ├── danbooru_artist_tags_v4.5.txt  # Artist tags (you provide)
 ├── comparison_images/       # Generated images (auto-created)
-├── artist_elo_ratings.json  # ELO data (auto-created)
-├── active_pool.json         # Pool data (auto-created)
-└── comparison_history.json  # History (auto-created)
+└── profiles/                # Profile data (auto-created)
+    └── <profile_name>/      # Each profile has its own folder
+        ├── artist_elo_ratings.json
+        ├── active_pool.json
+        ├── comparison_history.json
+        └── settings.json
 ```
 
 ## Tips

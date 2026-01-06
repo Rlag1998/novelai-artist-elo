@@ -39,10 +39,55 @@ def get_api_key() -> str:
 
 SCRIPT_DIR = Path(__file__).parent
 ARTIST_TAGS_FILE = SCRIPT_DIR / "danbooru_artist_tags_v4.5.txt"
-ELO_RATINGS_FILE = SCRIPT_DIR / "artist_elo_ratings.json"
+PROFILES_DIR = SCRIPT_DIR / "profiles"
 COMPARISON_IMAGES_DIR = SCRIPT_DIR / "comparison_images"
+
+# Default profile paths (used when no profile system, for backwards compatibility)
+ELO_RATINGS_FILE = SCRIPT_DIR / "artist_elo_ratings.json"
 COMPARISON_HISTORY_FILE = SCRIPT_DIR / "comparison_history.json"
 ACTIVE_POOL_FILE = SCRIPT_DIR / "active_pool.json"
+
+
+def get_profile_dir(profile_name: str) -> Path:
+    """Get the directory for a specific profile."""
+    return PROFILES_DIR / profile_name
+
+
+def get_profile_files(profile_name: str) -> dict:
+    """Get all file paths for a profile."""
+    profile_dir = get_profile_dir(profile_name)
+    return {
+        "elo_ratings": profile_dir / "artist_elo_ratings.json",
+        "active_pool": profile_dir / "active_pool.json",
+        "comparison_history": profile_dir / "comparison_history.json",
+        "settings": profile_dir / "settings.json",
+    }
+
+
+def list_profiles() -> list:
+    """List all available profiles."""
+    if not PROFILES_DIR.exists():
+        return []
+    return [d.name for d in PROFILES_DIR.iterdir() if d.is_dir()]
+
+
+def create_profile(profile_name: str) -> bool:
+    """Create a new profile directory."""
+    profile_dir = get_profile_dir(profile_name)
+    if profile_dir.exists():
+        return False
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return True
+
+
+def delete_profile(profile_name: str) -> bool:
+    """Delete a profile directory and all its contents."""
+    import shutil
+    profile_dir = get_profile_dir(profile_name)
+    if not profile_dir.exists():
+        return False
+    shutil.rmtree(profile_dir)
+    return True
 
 
 # --------------------------------------------------------------------------------
