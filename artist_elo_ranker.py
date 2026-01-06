@@ -1349,15 +1349,15 @@ class ArtistELORanker:
                         choices=list_profiles(),
                         value=self.current_profile,
                         interactive=True,
-                        scale=2,
+                        scale=3,
                     )
                     new_profile_input = gr.Textbox(
-                        label="New Profile",
-                        placeholder="name",
-                        scale=1,
+                        label="New Profile Name",
+                        placeholder="Enter name...",
+                        scale=2,
                     )
-                    create_profile_btn = gr.Button("Create", size="sm", min_width=60)
-                    delete_profile_btn = gr.Button("Delete", size="sm", variant="stop", min_width=60)
+                    create_profile_btn = gr.Button("Create Profile", size="sm", scale=1)
+                    delete_profile_btn = gr.Button("Delete Profile", size="sm", variant="stop", scale=1)
 
             with gr.Row():
                 # Main comparison area (left side)
@@ -1631,23 +1631,35 @@ class ArtistELORanker:
                 outputs=[export_file]
             )
 
-            # Profile management events
+            # Profile management events - chain image generation after profile changes
             create_profile_btn.click(
                 fn=on_create_profile,
                 inputs=[new_profile_input],
                 outputs=[profile_dropdown, new_profile_input, status_msg]
+            ).then(
+                fn=on_generate,
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             delete_profile_btn.click(
                 fn=on_delete_profile,
                 inputs=[profile_dropdown],
                 outputs=[profile_dropdown, status_msg, leaderboard]
+            ).then(
+                fn=on_generate,
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             profile_dropdown.change(
                 fn=on_switch_profile,
                 inputs=[profile_dropdown],
                 outputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown, status_msg, leaderboard, history_display]
+            ).then(
+                fn=on_generate,
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             # Auto-save settings on change
