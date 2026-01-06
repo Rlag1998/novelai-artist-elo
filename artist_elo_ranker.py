@@ -35,6 +35,7 @@ from config import (
     list_profiles,
     create_profile,
     delete_profile,
+    ensure_default_profile,
     STEPS,
     IMG_WIDTH,
     IMG_HEIGHT,
@@ -847,19 +848,18 @@ class UndoState:
 class ArtistELORanker:
     """Main application class."""
 
-    def __init__(self, profile_name: str = None):
-        # Profile management
-        self.current_profile: Optional[str] = profile_name
-        self.profile_files: Optional[dict] = None
+    def __init__(self):
+        # Ensure directories exist
+        COMPARISON_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Initialize with profile or default files
-        if profile_name:
-            self._load_profile(profile_name)
-        else:
-            self.elo_system = ELOSystem.load(ELO_RATINGS_FILE)
-            self.artist_manager = ArtistTagManager(ARTIST_TAGS_FILE)
-            self.artist_manager.initialize_pool(self.elo_system)
-            self.history = ComparisonHistory(COMPARISON_HISTORY_FILE)
+        # Always use profiles - auto-create default if needed
+        default_profile = ensure_default_profile()
+        self.current_profile: str = default_profile
+        self.profile_files: dict = get_profile_files(default_profile)
+
+        # Load the profile
+        self._load_profile(default_profile)
 
         self.session: Optional[ApiCredential] = None
 
@@ -877,10 +877,6 @@ class ArtistELORanker:
         # Rotation log: list of (type, artist, elo, extra_info) - most recent first
         # type: "out" or "in", extra_info: is_returning for "in"
         self.rotation_log: List[Tuple[str, str, float, Optional[bool]]] = []
-
-        # Ensure directories exist
-        COMPARISON_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
     def _load_profile(self, profile_name: str):
         """Load a profile's data files."""
@@ -916,21 +912,11 @@ class ArtistELORanker:
 
     def get_elo_file(self) -> Path:
         """Get the ELO ratings file path for current profile."""
-        if self.profile_files:
-            return self.profile_files["elo_ratings"]
-        return ELO_RATINGS_FILE
-
-    def get_pool_file(self) -> Path:
-        """Get the active pool file path for current profile."""
-        if self.profile_files:
-            return self.profile_files["active_pool"]
-        return ACTIVE_POOL_FILE
+        return self.profile_files["elo_ratings"]
 
     def save_profile_settings(self, positive_prompt: str, negative_prompt: str,
                               quality_toggle: bool, uc_preset: int):
         """Save prompt settings to the current profile."""
-        if not self.profile_files:
-            return
         settings = {
             "positive_prompt": positive_prompt,
             "negative_prompt": negative_prompt,
@@ -942,7 +928,7 @@ class ArtistELORanker:
 
     def load_profile_settings(self) -> dict:
         """Load prompt settings from the current profile."""
-        if not self.profile_files or not self.profile_files["settings"].exists():
+        if not self.profile_files["settings"].exists():
             return {
                 "positive_prompt": "",
                 "negative_prompt": "",
@@ -1355,26 +1341,18 @@ class ArtistELORanker:
                 "**Shortcuts:** `1` = Pick A, `2` = Pick B, `s` = Skip, `0` = Undo"
             )
 
-            # Profile Management
+            # Profile Management - compact row
             with gr.Row():
-                with gr.Column(scale=3):
-                    profile_dropdown = gr.Dropdown(
-                        label="Profile",
-                        choices=list_profiles() or ["(no profiles)"],
-                        value=self.current_profile if self.current_profile else None,
-                        allow_custom_value=False,
-                        interactive=True,
-                    )
-                with gr.Column(scale=2):
-                    new_profile_name = gr.Textbox(
-                        label="New Profile Name",
-                        placeholder="Enter name...",
-                        scale=1,
-                    )
-                with gr.Column(scale=1):
-                    create_profile_btn = gr.Button("Create", size="sm")
-                with gr.Column(scale=1):
-                    delete_profile_btn = gr.Button("Delete", size="sm", variant="stop")
+                profile_dropdown = gr.Dropdown(
+                    label="Profile",
+                    choices=list_profiles(),
+                    value=self.current_profile,
+                    allow_custom_value=True,  # Allow typing new profile names
+                    interactive=True,
+                    scale=3,
+                )
+                create_profile_btn = gr.Button("+ New", size="sm", scale=1)
+                delete_profile_btn = gr.Button("Delete", size="sm", variant="stop", scale=1)
 
             with gr.Row():
                 # Main comparison area (left side)
@@ -1447,8 +1425,9 @@ class ArtistELORanker:
                         label="Top Artists"
                     )
                     with gr.Row():
-                        refresh_btn = gr.Button("Refresh Leaderboard", size="sm")
-                        export_btn = gr.DownloadButton("Export CSV", size="sm", value=None)
+                        refresh_btn = gr.Button("Refresh", size="sm")
+                        export_btn = gr.Button("Export CSV", size="sm")
+                    export_file = gr.File(label="Download", visible=False)
 
                     # History panel
                     with gr.Accordion("Recent History", open=False):
@@ -1492,71 +1471,82 @@ class ArtistELORanker:
                     f.write(content)
                 return str(filepath)
 
-            def on_create_profile(name):
-                """Create a new profile."""
+            def on_create_profile(current_dropdown_value):
+                """Create a new profile from typed name in dropdown."""
+                # User types a new name in the dropdown (allow_custom_value=True)
+                name = current_dropdown_value
                 if not name or not name.strip():
                     return (
                         gr.update(),  # profile_dropdown unchanged
-                        "Please enter a profile name.",  # status_msg
+                        "Type a new profile name in the dropdown, then click '+ New'.",
                     )
                 name = name.strip().replace(" ", "_")
-                if name in list_profiles():
+                existing = list_profiles()
+                if name in existing:
+                    # Just switch to it
+                    settings = self.switch_profile(name)
                     return (
-                        gr.update(),
-                        f"Profile '{name}' already exists.",
+                        gr.update(choices=existing, value=name),
+                        f"Switched to existing profile: {name}",
                     )
+                # Create new profile
                 create_profile(name)
                 self._load_profile(name)
                 profiles = list_profiles()
                 return (
                     gr.update(choices=profiles, value=name),
-                    f"Created and switched to profile: {name}",
+                    f"Created profile: {name}",
                 )
 
             def on_delete_profile(profile_name):
                 """Delete the current profile."""
-                if not profile_name or profile_name == "(no profiles)":
+                if not profile_name:
                     return (
                         gr.update(),
-                        "No profile selected to delete.",
+                        "No profile selected.",
+                        self.format_top_artists_display(),
+                    )
+                profiles_before = list_profiles()
+                if len(profiles_before) <= 1:
+                    return (
+                        gr.update(),
+                        "Cannot delete the only profile.",
                         self.format_top_artists_display(),
                     )
                 delete_profile(profile_name)
                 profiles = list_profiles()
-                # Switch to another profile or none
-                if profiles:
-                    new_profile = profiles[0]
-                    self._load_profile(new_profile)
-                    return (
-                        gr.update(choices=profiles, value=new_profile),
-                        f"Deleted profile: {profile_name}. Switched to: {new_profile}",
-                        self.format_top_artists_display(),
-                    )
-                else:
-                    # No profiles left, use default files
-                    self.current_profile = None
-                    self.profile_files = None
-                    self.elo_system = ELOSystem.load(ELO_RATINGS_FILE)
-                    self.artist_manager = ArtistTagManager(ARTIST_TAGS_FILE)
-                    self.artist_manager.initialize_pool(self.elo_system)
-                    self.history = ComparisonHistory(COMPARISON_HISTORY_FILE)
-                    return (
-                        gr.update(choices=["(no profiles)"], value=None),
-                        f"Deleted profile: {profile_name}. No profiles remaining.",
-                        self.format_top_artists_display(),
-                    )
+                new_profile = profiles[0]
+                self._load_profile(new_profile)
+                return (
+                    gr.update(choices=profiles, value=new_profile),
+                    f"Deleted '{profile_name}'. Switched to: {new_profile}",
+                    self.format_top_artists_display(),
+                )
 
             def on_switch_profile(profile_name):
-                """Switch to a different profile."""
-                if not profile_name or profile_name == "(no profiles)":
+                """Switch to a different profile or handle new typed name."""
+                if not profile_name:
                     return (
-                        "",  # prompt_input
-                        "",  # negative_prompt_input
-                        True,  # quality_toggle
-                        0,  # uc_preset
-                        f"Profile switched: {profile_name}",  # status_msg
-                        self.format_top_artists_display(),  # leaderboard
-                        self.format_recent_history(),  # history
+                        gr.update(),  # prompt_input
+                        gr.update(),  # negative_prompt_input
+                        gr.update(),  # quality_toggle
+                        gr.update(),  # uc_preset
+                        "No profile selected.",
+                        self.format_top_artists_display(),
+                        self.format_recent_history(),
+                    )
+                # Check if it's an existing profile
+                existing = list_profiles()
+                if profile_name not in existing:
+                    # It's a new typed name - don't switch yet, wait for Create button
+                    return (
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                        f"Type '+ New' to create profile: {profile_name}",
+                        self.format_top_artists_display(),
+                        self.format_recent_history(),
                     )
                 settings = self.switch_profile(profile_name)
                 return (
@@ -1564,7 +1554,7 @@ class ArtistELORanker:
                     settings.get("negative_prompt", ""),
                     settings.get("quality_toggle", True),
                     settings.get("uc_preset", 0),
-                    f"Loaded profile: {profile_name}",
+                    f"Profile: {profile_name}",
                     self.format_top_artists_display(),
                     self.format_recent_history(),
                 )
@@ -1635,24 +1625,25 @@ class ArtistELORanker:
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
-            # Export leaderboard - pre-generate CSV so it's ready for download
-            def prepare_export():
-                """Pre-generate CSV for download button."""
-                return on_export()
-
-            # Update export button with file on refresh
+            # Refresh leaderboard
             refresh_btn.click(
                 fn=lambda: self.format_top_artists_display(),
                 outputs=[leaderboard]
+            )
+
+            # Export leaderboard - generate CSV and show download link
+            export_btn.click(
+                fn=on_export,
+                outputs=[export_file]
             ).then(
-                fn=prepare_export,
-                outputs=[export_btn]
+                fn=lambda: gr.update(visible=True),
+                outputs=[export_file]
             )
 
             # Profile management events
             create_profile_btn.click(
                 fn=on_create_profile,
-                inputs=[new_profile_name],
+                inputs=[profile_dropdown],
                 outputs=[profile_dropdown, status_msg]
             )
 
