@@ -167,10 +167,11 @@ very aesthetic, masterpiece, no text
 ```
 
 #### Auto-Negative Preset (Dropdown)
-NovelAI automatically adds these tags to your negative prompt. Choose from:
+NovelAI can automatically add preset tags to your negative prompt. Choose from:
 
 | Preset | Description |
 |--------|-------------|
+| **None** | Disabled - no auto-negative tags added |
 | **Heavy** | Standard quality filters (lowres, bad quality, jpeg artifacts, etc.) |
 | **Light** | Minimal filters (shorter list, less restrictive) |
 | **Human Focus** | Optimized for character art (sketch, flat colors, comic, etc.) |

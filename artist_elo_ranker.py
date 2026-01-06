@@ -620,8 +620,9 @@ async def generate_image(
 ) -> bool:
     """Generate a single image and save it."""
     try:
-        # Map UC preset index to enum
+        # Map UC preset index to enum (-1 = None/disabled)
         uc_preset_map = {
+            -1: None,  # Disabled
             0: UCPreset.TYPE0,
             1: UCPreset.TYPE1,
             2: UCPreset.TYPE2,
@@ -1294,13 +1295,14 @@ class ArtistELORanker:
                             uc_preset_dropdown = gr.Dropdown(
                                 label="Auto-Negative Preset",
                                 choices=[
+                                    ("None - no auto-negatives", -1),
                                     ("Heavy - standard quality filters", 0),
                                     ("Light - minimal quality filters", 1),
                                     ("Human Focus - optimized for characters", 2),
                                     ("Heavy + Anatomy - includes body fixes", 3),
                                 ],
                                 value=0,
-                                info="NovelAI auto-adds these to your negative prompt"
+                                interactive=True,
                             )
                         gr.Markdown(
                             "*Leave prompts empty to use defaults. Artist tags are only inserted into the positive prompt.*"
@@ -1339,7 +1341,8 @@ class ArtistELORanker:
                     )
                     with gr.Row():
                         refresh_btn = gr.Button("Refresh Leaderboard", size="sm")
-                    export_file = gr.DownloadButton("Export CSV", size="sm")
+                        export_btn = gr.Button("Export CSV", size="sm")
+                    export_file = gr.File(label="Download", visible=False)
 
                     # History panel
                     with gr.Accordion("Recent History", open=False):
@@ -1448,9 +1451,12 @@ class ArtistELORanker:
                 outputs=[leaderboard]
             )
 
-            # Export leaderboard - DownloadButton triggers on click
-            export_file.click(
+            # Export leaderboard
+            export_btn.click(
                 fn=on_export,
+                outputs=[export_file]
+            ).then(
+                fn=lambda: gr.update(visible=True),
                 outputs=[export_file]
             )
 
