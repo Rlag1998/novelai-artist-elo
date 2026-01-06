@@ -613,7 +613,8 @@ def insert_artist_tags(prompt: str, artist_tags: str) -> str:
 async def generate_image(
     session: ApiCredential,
     prompt: str,
-    output_path: Path
+    output_path: Path,
+    negative_prompt: str = None
 ) -> bool:
     """Generate a single image and save it."""
     try:
@@ -624,7 +625,7 @@ async def generate_image(
             model=MODEL,
             steps=STEPS,
             sampler=SAMPLER,
-            negative_prompt=NEGATIVE_PROMPT,
+            negative_prompt=negative_prompt if negative_prompt else NEGATIVE_PROMPT,
             ucPreset=UC_PRESET,
             qualityToggle=True,
             decrisp_mode=False,
@@ -650,7 +651,8 @@ async def generate_comparison_pair(
     base_prompt: str,
     artist_manager: ArtistTagManager,
     session: ApiCredential,
-    output_dir: Path
+    output_dir: Path,
+    negative_prompt: str = None
 ) -> Tuple[Optional[Path], Optional[Path], List[str], List[str]]:
     """
     Generate two images with different artist combinations.
@@ -682,11 +684,11 @@ async def generate_comparison_pair(
 
     print(f"Generating image A with artists: {artists_a}")
     print(f"Prompt A: {prompt_a[:200]}...")
-    success_a = await generate_image(session, prompt_a, path_a)
+    success_a = await generate_image(session, prompt_a, path_a, negative_prompt)
 
     print(f"Generating image B with artists: {artists_b}")
     print(f"Prompt B: {prompt_b[:200]}...")
-    success_b = await generate_image(session, prompt_b, path_b)
+    success_b = await generate_image(session, prompt_b, path_b, negative_prompt)
 
     if success_a and success_b:
         return path_a, path_b, artists_a, artists_b
@@ -859,6 +861,42 @@ class ArtistELORanker:
             self.session = ApiCredential(api_token=SecretStr(api_key))
         return self.session
 
+    def export_leaderboard(self) -> str:
+        """Export full leaderboard sorted by ELO as downloadable text."""
+        sorted_artists = sorted(
+            self.elo_system.ratings.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        lines = ["ELO\tArtist\tComparisons"]
+        for artist, rating in sorted_artists:
+            comparisons = self.elo_system.get_artist_comparison_count(artist)
+            lines.append(f"{rating:.0f}\t{artist}\t{comparisons}")
+        return "\n".join(lines)
+
+    def format_recent_history(self, limit: int = 10) -> str:
+        """Format recent comparison history for display."""
+        if not self.history.records:
+            return "*No comparison history yet.*"
+
+        lines = ["### Recent Comparisons"]
+        recent = self.history.records[-limit:][::-1]  # Last N, reversed (newest first)
+
+        for i, record in enumerate(recent, 1):
+            winner = record.get("winner", "?")
+            artists_a = record.get("artists_a", [])
+            artists_b = record.get("artists_b", [])
+
+            winner_artists = artists_a if winner == "A" else artists_b
+            loser_artists = artists_b if winner == "A" else artists_a
+
+            winner_str = ", ".join(winner_artists)
+            loser_str = ", ".join(loser_artists)
+
+            lines.append(f"{i}. **{winner_str}** beat {loser_str}")
+
+        return "\n".join(lines)
+
     def format_top_artists_display(self) -> str:
         """Format top artists for display with win rate stats."""
         top_artists = self.elo_system.get_top_artists(30)
@@ -940,10 +978,13 @@ class ArtistELORanker:
 
         return "\n".join(lines)
 
-    async def generate_new_comparison(self, custom_prompt: str):
+    async def generate_new_comparison(self, custom_prompt: str, custom_negative_prompt: str = ""):
         """Generate a new pair of images for comparison."""
         # Use custom prompt if provided, otherwise default
         base_prompt = custom_prompt.strip() if custom_prompt.strip() else DEFAULT_PROMPT
+
+        # Use custom negative prompt if provided, otherwise None (will use default)
+        negative_prompt = custom_negative_prompt.strip() if custom_negative_prompt.strip() else None
 
         # Remove any existing artist tags from the prompt
         base_prompt = remove_artist_tags(base_prompt)
@@ -983,7 +1024,8 @@ class ArtistELORanker:
             base_prompt,
             self.artist_manager,
             session,
-            COMPARISON_IMAGES_DIR
+            COMPARISON_IMAGES_DIR,
+            negative_prompt
         )
 
         if path_a and path_b:
@@ -1198,15 +1240,21 @@ class ArtistELORanker:
                 # Main comparison area (left side)
                 with gr.Column(scale=2):
                     # Prompt input
-                    with gr.Accordion("Custom Prompt (Optional)", open=False):
+                    with gr.Accordion("Custom Prompts (Optional)", open=False):
                         prompt_input = gr.Textbox(
-                            label="Base Prompt",
-                            placeholder="Enter custom prompt (artist tags will be auto-replaced)...",
-                            lines=5,
+                            label="Positive Prompt",
+                            placeholder="Enter custom prompt (artist tags will be auto-inserted)...",
+                            lines=4,
+                            value=""
+                        )
+                        negative_prompt_input = gr.Textbox(
+                            label="Negative Prompt",
+                            placeholder="Enter custom negative prompt (leave empty for default)...",
+                            lines=3,
                             value=""
                         )
                         gr.Markdown(
-                            "*Leave empty to use default prompt. Any existing artist tags will be removed and replaced.*"
+                            "*Leave empty to use defaults. Artist tags are only inserted into the positive prompt.*"
                         )
 
                     # Status message
@@ -1240,32 +1288,50 @@ class ArtistELORanker:
                         self.format_top_artists_display(),
                         label="Top Artists"
                     )
-                    refresh_btn = gr.Button("Refresh Leaderboard", size="sm")
+                    with gr.Row():
+                        refresh_btn = gr.Button("Refresh Leaderboard", size="sm")
+                        export_btn = gr.Button("Export Leaderboard", size="sm")
+                    export_output = gr.Textbox(
+                        label="Export (copy this)",
+                        visible=False,
+                        lines=10,
+                        max_lines=20
+                    )
+
+                    # History panel
+                    with gr.Accordion("Recent History", open=False):
+                        history_display = gr.Markdown(self.format_recent_history())
 
             # Event handlers
-            def on_generate(prompt):
+            def on_generate(prompt, negative_prompt):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(self.generate_new_comparison(prompt))
-                    # Add artist display text to result
+                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt))
+                    # Add artist display text and history to result
                     artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
                     artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
-                    return result + (artists_a_text, artists_b_text)
+                    history_text = self.format_recent_history()
+                    return result + (artists_a_text, artists_b_text, history_text)
                 finally:
                     loop.close()
 
-            def on_pick_then_generate(prompt):
+            def on_pick_then_generate(prompt, negative_prompt):
                 """Generate new comparison after pick (for chaining)."""
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(self.generate_new_comparison(prompt))
+                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt))
                     artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
                     artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
-                    return result + (artists_a_text, artists_b_text)
+                    history_text = self.format_recent_history()
+                    return result + (artists_a_text, artists_b_text, history_text)
                 finally:
                     loop.close()
+
+            def on_export():
+                """Export leaderboard as text."""
+                return gr.update(value=self.export_leaderboard(), visible=True)
 
             def on_toggle_artists(show):
                 """Toggle visibility of artist tags."""
@@ -1279,13 +1345,14 @@ class ArtistELORanker:
                 result = self.undo_last_selection()
                 artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}" if self.current_artists_a else ""
                 artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}" if self.current_artists_b else ""
-                return result + (artists_a_text, artists_b_text)
+                history_text = self.format_recent_history()
+                return result + (artists_a_text, artists_b_text, history_text)
 
             # Auto-generate first comparison on app load
             app.load(
                 fn=on_generate,
-                inputs=[prompt_input],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display]
+                inputs=[prompt_input, negative_prompt_input],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             # Pick A: update ELO, then auto-generate next pair
@@ -1294,8 +1361,8 @@ class ArtistELORanker:
                 outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
             ).then(
                 fn=on_pick_then_generate,
-                inputs=[prompt_input],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display]
+                inputs=[prompt_input, negative_prompt_input],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             # Pick B: update ELO, then auto-generate next pair
@@ -1304,14 +1371,14 @@ class ArtistELORanker:
                 outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
             ).then(
                 fn=on_pick_then_generate,
-                inputs=[prompt_input],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display]
+                inputs=[prompt_input, negative_prompt_input],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             # Undo: restore previous state and images
             undo_btn.click(
                 fn=on_undo,
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display]
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             # Toggle artist visibility
@@ -1324,13 +1391,19 @@ class ArtistELORanker:
             # Skip: generate new images without any ELO changes
             skip_btn.click(
                 fn=on_pick_then_generate,
-                inputs=[prompt_input],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display]
+                inputs=[prompt_input, negative_prompt_input],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
             refresh_btn.click(
                 fn=lambda: self.format_top_artists_display(),
                 outputs=[leaderboard]
+            )
+
+            # Export leaderboard
+            export_btn.click(
+                fn=on_export,
+                outputs=[export_output]
             )
 
             # Keyboard shortcuts via JavaScript
