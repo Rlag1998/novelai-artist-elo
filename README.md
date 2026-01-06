@@ -14,7 +14,10 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 - **Win Rate Statistics**: Track solo, duo, and trio performance for each artist
 - **Undo Support**: Revert the last comparison if you change your mind
 - **Keyboard Shortcuts**: Quick voting with `1`, `2`, `s` (skip), and `0` (undo)
-- **Custom Prompts**: Use your own prompts while the system handles artist tag insertion
+- **Custom Prompts**: Use your own positive and negative prompts
+- **Generation Settings**: Toggle quality tags, choose from 4 UC (Undesired Content) presets
+- **Export to CSV**: Download full leaderboard with detailed stats
+- **Recent History**: View your last 10 comparison results
 
 ## Prerequisites
 
@@ -118,34 +121,65 @@ The statistics panel shows the current state of your artist pool and ranking pro
 - **Pool Health**: Breakdown of artists above/below average and newcomers
 - **Most likely to rotate out**: Artists at risk of being removed from the pool
 
-### Custom Prompts
+### Export to CSV
 
-You can use your own prompts instead of the default one. Click the "Custom Prompt (Optional)" accordion to expand the prompt editor.
+Click "Export CSV" to download the full leaderboard as a CSV file with detailed statistics:
+
+- Rank, Artist, ELO, Total Comparisons
+- Wins, Losses, Win Rate
+- Solo rounds/wins/win rate
+- Duo rounds/wins/win rate
+- Trio rounds/wins/win rate
+
+The export includes ALL rated artists (not just the top 30 shown in the UI).
+
+### Recent History
+
+The "Recent History" accordion shows your last 10 comparison results, displaying which artist combinations won against which. Useful for reviewing your choices and spotting patterns.
+
+### Custom Prompts & Generation Settings
+
+Click the "Custom Prompts (Optional)" accordion to access prompt and generation settings.
 
 ![Custom Prompt Editor](screenshots/custom_prompt.png)
 
-**How it works:**
+#### Positive Prompt
 - Write any NovelAI prompt you want to use for comparisons
 - The system will automatically insert artist tags into your prompt
 - If your prompt contains `{artist_placeholder}`, artist tags replace that marker
 - If no placeholder exists, artist tags are appended to the end
-
-**Example custom prompt:**
-```
-1boy, fantasy warrior, armor, castle background, dramatic lighting, {artist_placeholder}, masterpiece
-```
-
-**Tips for custom prompts:**
-- Keep prompts consistent during a ranking session for fair comparisons
-- Use `{artist_placeholder}` to control exactly where artist tags appear
-- The same prompt is used for both images in a comparison (only the artists differ)
 - Leave empty to use the built-in default prompt
-- Any existing `artist:` tags in your prompt are automatically removed and replaced
 
-**Why use custom prompts?**
-- Test how artists perform with specific subjects (e.g., landscapes vs portraits)
-- Evaluate artist styles for your particular use case
-- Compare artists on content you actually care about generating
+**Example:**
+```
+1boy, fantasy warrior, armor, castle background, {artist_placeholder}, masterpiece
+```
+
+#### Negative Prompt
+- Enter your own negative prompt to control what to avoid in generations
+- Leave empty to use the built-in default negative prompt
+- Artist tags are NOT inserted into negative prompts
+
+#### Add Quality Tags (Checkbox)
+When enabled (default), automatically appends to your positive prompt:
+```
+very aesthetic, masterpiece, no text
+```
+
+#### Auto-Negative Preset (Dropdown)
+NovelAI automatically adds these tags to your negative prompt. Choose from:
+
+| Preset | Description |
+|--------|-------------|
+| **Heavy** | Standard quality filters (lowres, bad quality, jpeg artifacts, etc.) |
+| **Light** | Minimal filters (shorter list, less restrictive) |
+| **Human Focus** | Optimized for character art (sketch, flat colors, comic, etc.) |
+| **Heavy + Anatomy** | Heavy preset plus body/anatomy fixes (bad anatomy, glowing eyes, etc.) |
+
+**Tips:**
+- Keep prompts consistent during a ranking session for fair comparisons
+- The same prompt is used for both images (only the artists differ)
+- Test how artists perform with specific subjects (landscapes vs portraits)
 
 ## Artist Tags File
 
