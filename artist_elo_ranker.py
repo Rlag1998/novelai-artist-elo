@@ -614,10 +614,19 @@ async def generate_image(
     session: ApiCredential,
     prompt: str,
     output_path: Path,
-    negative_prompt: str = None
+    negative_prompt: str = None,
+    quality_toggle: bool = True,
+    uc_preset: int = 0
 ) -> bool:
     """Generate a single image and save it."""
     try:
+        # Map UC preset index to enum
+        uc_preset_map = {
+            0: UCPreset.TYPE0,
+            1: UCPreset.TYPE1,
+            2: UCPreset.TYPE2,
+            3: UCPreset.TYPE3,
+        }
         gen = GenerateImageInfer.build_generate(
             prompt=prompt,
             width=IMG_WIDTH,
@@ -626,8 +635,8 @@ async def generate_image(
             steps=STEPS,
             sampler=SAMPLER,
             negative_prompt=negative_prompt if negative_prompt else NEGATIVE_PROMPT,
-            ucPreset=UC_PRESET,
-            qualityToggle=True,
+            ucPreset=uc_preset_map.get(uc_preset, UCPreset.TYPE0),
+            qualityToggle=quality_toggle,
             decrisp_mode=False,
             variety_boost=False,
         )
@@ -652,7 +661,9 @@ async def generate_comparison_pair(
     artist_manager: ArtistTagManager,
     session: ApiCredential,
     output_dir: Path,
-    negative_prompt: str = None
+    negative_prompt: str = None,
+    quality_toggle: bool = True,
+    uc_preset: int = 0
 ) -> Tuple[Optional[Path], Optional[Path], List[str], List[str]]:
     """
     Generate two images with different artist combinations.
@@ -684,11 +695,11 @@ async def generate_comparison_pair(
 
     print(f"Generating image A with artists: {artists_a}")
     print(f"Prompt A: {prompt_a[:200]}...")
-    success_a = await generate_image(session, prompt_a, path_a, negative_prompt)
+    success_a = await generate_image(session, prompt_a, path_a, negative_prompt, quality_toggle, uc_preset)
 
     print(f"Generating image B with artists: {artists_b}")
     print(f"Prompt B: {prompt_b[:200]}...")
-    success_b = await generate_image(session, prompt_b, path_b, negative_prompt)
+    success_b = await generate_image(session, prompt_b, path_b, negative_prompt, quality_toggle, uc_preset)
 
     if success_a and success_b:
         return path_a, path_b, artists_a, artists_b
@@ -997,7 +1008,7 @@ class ArtistELORanker:
 
         return "\n".join(lines)
 
-    async def generate_new_comparison(self, custom_prompt: str, custom_negative_prompt: str = ""):
+    async def generate_new_comparison(self, custom_prompt: str, custom_negative_prompt: str = "", quality_toggle: bool = True, uc_preset: int = 0):
         """Generate a new pair of images for comparison."""
         # Use custom prompt if provided, otherwise default
         base_prompt = custom_prompt.strip() if custom_prompt.strip() else DEFAULT_PROMPT
@@ -1044,7 +1055,9 @@ class ArtistELORanker:
             self.artist_manager,
             session,
             COMPARISON_IMAGES_DIR,
-            negative_prompt
+            negative_prompt,
+            quality_toggle,
+            uc_preset
         )
 
         if path_a and path_b:
@@ -1272,8 +1285,25 @@ class ArtistELORanker:
                             lines=3,
                             value=""
                         )
+                        with gr.Row():
+                            quality_toggle = gr.Checkbox(
+                                label="Add quality tags",
+                                value=True,
+                                info="Adds 'very aesthetic, masterpiece, no text' to prompt"
+                            )
+                            uc_preset_dropdown = gr.Dropdown(
+                                label="Auto-Negative Preset",
+                                choices=[
+                                    ("Heavy - standard quality filters", 0),
+                                    ("Light - minimal quality filters", 1),
+                                    ("Human Focus - optimized for characters", 2),
+                                    ("Heavy + Anatomy - includes body fixes", 3),
+                                ],
+                                value=0,
+                                info="NovelAI auto-adds these to your negative prompt"
+                            )
                         gr.Markdown(
-                            "*Leave empty to use defaults. Artist tags are only inserted into the positive prompt.*"
+                            "*Leave prompts empty to use defaults. Artist tags are only inserted into the positive prompt.*"
                         )
 
                     # Status message
@@ -1316,11 +1346,11 @@ class ArtistELORanker:
                         history_display = gr.Markdown(self.format_recent_history())
 
             # Event handlers
-            def on_generate(prompt, negative_prompt):
+            def on_generate(prompt, negative_prompt, quality_tags, uc_preset):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt))
+                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt, quality_tags, uc_preset))
                     # Add artist display text and history to result
                     artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
                     artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
@@ -1329,12 +1359,12 @@ class ArtistELORanker:
                 finally:
                     loop.close()
 
-            def on_pick_then_generate(prompt, negative_prompt):
+            def on_pick_then_generate(prompt, negative_prompt, quality_tags, uc_preset):
                 """Generate new comparison after pick (for chaining)."""
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt))
+                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt, quality_tags, uc_preset))
                     artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
                     artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
                     history_text = self.format_recent_history()
@@ -1369,7 +1399,7 @@ class ArtistELORanker:
             # Auto-generate first comparison on app load
             app.load(
                 fn=on_generate,
-                inputs=[prompt_input, negative_prompt_input],
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
@@ -1379,7 +1409,7 @@ class ArtistELORanker:
                 outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
             ).then(
                 fn=on_pick_then_generate,
-                inputs=[prompt_input, negative_prompt_input],
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
@@ -1389,7 +1419,7 @@ class ArtistELORanker:
                 outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
             ).then(
                 fn=on_pick_then_generate,
-                inputs=[prompt_input, negative_prompt_input],
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
@@ -1409,7 +1439,7 @@ class ArtistELORanker:
             # Skip: generate new images without any ELO changes
             skip_btn.click(
                 fn=on_pick_then_generate,
-                inputs=[prompt_input, negative_prompt_input],
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
