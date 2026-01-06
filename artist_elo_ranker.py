@@ -910,9 +910,9 @@ class ArtistELORanker:
     def format_recent_history(self, limit: int = 10) -> str:
         """Format recent comparison history for display."""
         if not self.history.records:
-            return "*No comparison history yet.*"
+            return "*No comparisons yet.*"
 
-        lines = ["### Recent Comparisons"]
+        lines = ["*Newest first:*", ""]
         recent = self.history.records[-limit:][::-1]  # Last N, reversed (newest first)
 
         for i, record in enumerate(recent, 1):
@@ -997,11 +997,12 @@ class ArtistELORanker:
             for artist, elo, matches, weight in at_risk[:5]:
                 lines.append(f"- {artist} ({elo:.0f})")
 
-        # Show recent rotations
+        # Show recent pool changes
         if self.rotation_log:
             lines.append("")
             lines.append("---")
-            lines.append("### Recent Activity")
+            lines.append("### Pool Changes")
+            lines.append("*Newest first:*")
             for rot_type, artist, elo, extra in self.rotation_log[:8]:
                 if rot_type == "in":
                     status = "[returning]" if extra else "[new]"
@@ -1344,8 +1345,8 @@ class ArtistELORanker:
                     export_btn = gr.Button("Export Leaderboard as CSV")
                     export_file = gr.File(label="Download", visible=False)
 
-                    # History panel
-                    with gr.Accordion("Recent History", open=False):
+                    # Comparison history panel
+                    with gr.Accordion("Comparison History", open=False):
                         history_display = gr.Markdown(self.format_recent_history())
 
             # Event handlers

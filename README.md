@@ -17,7 +17,7 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 - **Custom Prompts**: Use your own positive and negative prompts
 - **Generation Settings**: Toggle quality tags, choose from 5 UC (Undesired Content) presets including "None"
 - **Export to CSV**: Download full leaderboard with detailed stats
-- **Recent History**: View your last 10 comparison results
+- **Comparison History**: View your last 10 comparison results
 
 ## Prerequisites
 
@@ -133,9 +133,9 @@ Click "Export CSV" to download the full leaderboard as a CSV file with detailed 
 
 The export includes ALL rated artists (not just the top 30 shown in the UI).
 
-### Recent History
+### Comparison History
 
-The "Recent History" accordion shows your last 10 comparison results, displaying which artist combinations won against which. Useful for reviewing your choices and spotting patterns.
+The "Comparison History" accordion shows your last 10 comparison results (newest first), displaying which artist combinations won against which. Useful for reviewing your choices and spotting patterns.
 
 ### Custom Prompts & Generation Settings
 
@@ -267,7 +267,7 @@ novelai-artist-elo/
 - **Start with more comparisons**: New artists need ~5 comparisons before they can be confidently rotated out
 - **Use consistent prompts**: Changing prompts mid-session can affect rating fairness
 - **Check pool health**: The "Pool Health" section shows at-risk artists and newcomers
-- **Review recent activity**: See which artists were recently added or removed
+- **Review pool changes**: See which artists were recently added or removed from the pool
 
 ## Troubleshooting
 
