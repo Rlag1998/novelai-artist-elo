@@ -30,12 +30,6 @@ from config import (
     COMPARISON_IMAGES_DIR,
     COMPARISON_HISTORY_FILE,
     ACTIVE_POOL_FILE,
-    PROFILES_DIR,
-    get_profile_files,
-    list_profiles,
-    create_profile,
-    delete_profile,
-    ensure_default_profile,
     STEPS,
     IMG_WIDTH,
     IMG_HEIGHT,
@@ -849,18 +843,11 @@ class ArtistELORanker:
     """Main application class."""
 
     def __init__(self):
-        # Ensure directories exist
-        COMPARISON_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Always use profiles - auto-create default if needed
-        default_profile = ensure_default_profile()
-        self.current_profile: str = default_profile
-        self.profile_files: dict = get_profile_files(default_profile)
-
-        # Load the profile
-        self._load_profile(default_profile)
-
+        self.elo_system = ELOSystem.load(ELO_RATINGS_FILE)
+        self.artist_manager = ArtistTagManager(ARTIST_TAGS_FILE)
+        # Initialize the active pool with ELO system
+        self.artist_manager.initialize_pool(self.elo_system)
+        self.history = ComparisonHistory(COMPARISON_HISTORY_FILE)
         self.session: Optional[ApiCredential] = None
 
         # Current comparison state
@@ -878,65 +865,8 @@ class ArtistELORanker:
         # type: "out" or "in", extra_info: is_returning for "in"
         self.rotation_log: List[Tuple[str, str, float, Optional[bool]]] = []
 
-    def _load_profile(self, profile_name: str):
-        """Load a profile's data files."""
-        self.current_profile = profile_name
-        self.profile_files = get_profile_files(profile_name)
-
-        # Ensure profile directory exists
-        self.profile_files["elo_ratings"].parent.mkdir(parents=True, exist_ok=True)
-
-        # Load profile-specific data
-        self.elo_system = ELOSystem.load(self.profile_files["elo_ratings"])
-        self.artist_manager = ArtistTagManager(ARTIST_TAGS_FILE)
-        self.artist_manager.active_pool = ActivePool(
-            self.artist_manager.artists,
-            self.elo_system,
-            pool_file=self.profile_files["active_pool"]
-        )
-        self.history = ComparisonHistory(self.profile_files["comparison_history"])
-
-    def switch_profile(self, profile_name: str) -> dict:
-        """Switch to a different profile. Returns the profile's saved settings."""
-        self._load_profile(profile_name)
-        # Reset state for new profile
-        self.current_image_a = None
-        self.current_image_b = None
-        self.current_artists_a = []
-        self.current_artists_b = []
-        self.last_undo_state = None
-        self.selection_made = False
-        self.rotation_log = []
-        # Load and return saved settings
-        return self.load_profile_settings()
-
-    def get_elo_file(self) -> Path:
-        """Get the ELO ratings file path for current profile."""
-        return self.profile_files["elo_ratings"]
-
-    def save_profile_settings(self, positive_prompt: str, negative_prompt: str,
-                              quality_toggle: bool, uc_preset: int):
-        """Save prompt settings to the current profile."""
-        settings = {
-            "positive_prompt": positive_prompt,
-            "negative_prompt": negative_prompt,
-            "quality_toggle": quality_toggle,
-            "uc_preset": uc_preset,
-        }
-        with open(self.profile_files["settings"], "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-
-    def load_profile_settings(self) -> dict:
-        """Load prompt settings from the current profile."""
-        if not self.profile_files["settings"].exists():
-            return {
-                "positive_prompt": "",
-                "negative_prompt": "",
-                "quality_toggle": True,
-                "uc_preset": 0,
-            }
-        with open(self.profile_files["settings"], "r", encoding="utf-8") as f:
-            return json.load(f)
+        # Ensure output directory exists
+        COMPARISON_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
     def get_session(self) -> ApiCredential:
         """Get or create API session."""
@@ -1206,7 +1136,7 @@ class ArtistELORanker:
 
         # Update ELO ratings
         self.elo_system.update_ratings(winners, losers)
-        self.elo_system.save(self.get_elo_file())
+        self.elo_system.save(ELO_RATINGS_FILE)
 
         # Update active pool (rotate losers, introduce new artists)
         rotated_out, rotated_in = self.artist_manager.process_result(winners, losers)
@@ -1296,7 +1226,7 @@ class ArtistELORanker:
 
         # Decrement total comparison count
         self.elo_system.comparison_count -= 1
-        self.elo_system.save(self.get_elo_file())
+        self.elo_system.save(ELO_RATINGS_FILE)
 
         # Restore rotated out artists to pool
         if state.rotated_out:
@@ -1340,24 +1270,6 @@ class ArtistELORanker:
                 "The artist tags are hidden during comparison for unbiased selection.  \n"
                 "**Shortcuts:** `1` = Pick A, `2` = Pick B, `s` = Skip, `0` = Undo"
             )
-
-            # Profile Management - compact group
-            with gr.Group():
-                with gr.Row():
-                    profile_dropdown = gr.Dropdown(
-                        label="Current Profile",
-                        choices=list_profiles(),
-                        value=self.current_profile,
-                        interactive=True,
-                        scale=3,
-                    )
-                    new_profile_input = gr.Textbox(
-                        label="New Profile Name",
-                        placeholder="Enter name...",
-                        scale=2,
-                    )
-                    create_profile_btn = gr.Button("Create Profile", size="sm", scale=1)
-                    delete_profile_btn = gr.Button("Delete Profile", size="sm", variant="stop", scale=1)
 
             with gr.Row():
                 # Main comparison area (left side)
@@ -1468,91 +1380,11 @@ class ArtistELORanker:
             def on_export():
                 """Export leaderboard as downloadable CSV file."""
                 content = self.export_leaderboard_csv()
-                # Include profile name in filename if using profiles
-                profile_suffix = f"_{self.current_profile}" if self.current_profile else ""
-                filepath = COMPARISON_IMAGES_DIR / f"leaderboard{profile_suffix}.csv"
+                filepath = COMPARISON_IMAGES_DIR / "leaderboard_export.csv"
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(content)
                 return str(filepath)
-
-            def on_create_profile(new_name):
-                """Create a new profile from text input."""
-                if not new_name or not new_name.strip():
-                    return (
-                        gr.update(),  # profile_dropdown unchanged
-                        "",  # clear text input
-                        "Enter a profile name first.",
-                    )
-                name = new_name.strip().replace(" ", "_")
-                existing = list_profiles()
-                if name in existing:
-                    return (
-                        gr.update(),
-                        "",
-                        f"Profile '{name}' already exists.",
-                    )
-                # Create new profile
-                create_profile(name)
-                self._load_profile(name)
-                profiles = list_profiles()
-                return (
-                    gr.update(choices=profiles, value=name),
-                    "",  # clear text input
-                    f"Created profile: {name}",
-                )
-
-            def on_delete_profile(profile_name):
-                """Delete the current profile."""
-                if not profile_name:
-                    return (
-                        gr.update(),
-                        "No profile selected.",
-                        self.format_top_artists_display(),
-                    )
-                profiles_before = list_profiles()
-                if len(profiles_before) <= 1:
-                    return (
-                        gr.update(),
-                        "Cannot delete the only profile.",
-                        self.format_top_artists_display(),
-                    )
-                delete_profile(profile_name)
-                profiles = list_profiles()
-                new_profile = profiles[0]
-                self._load_profile(new_profile)
-                return (
-                    gr.update(choices=profiles, value=new_profile),
-                    f"Deleted '{profile_name}'. Switched to: {new_profile}",
-                    self.format_top_artists_display(),
-                )
-
-            def on_switch_profile(profile_name):
-                """Switch to a different profile."""
-                if not profile_name:
-                    return (
-                        gr.update(),
-                        gr.update(),
-                        gr.update(),
-                        gr.update(),
-                        "No profile selected.",
-                        self.format_top_artists_display(),
-                        self.format_recent_history(),
-                    )
-                settings = self.switch_profile(profile_name)
-                return (
-                    settings.get("positive_prompt", ""),
-                    settings.get("negative_prompt", ""),
-                    settings.get("quality_toggle", True),
-                    settings.get("uc_preset", 0),
-                    f"Profile: {profile_name}",
-                    self.format_top_artists_display(),
-                    self.format_recent_history(),
-                )
-
-            def on_settings_change(prompt, negative_prompt, quality, uc_preset):
-                """Auto-save settings when they change."""
-                self.save_profile_settings(prompt, negative_prompt, quality, uc_preset)
 
             def on_toggle_artists(show):
                 """Toggle visibility of artist tags."""
@@ -1629,55 +1461,6 @@ class ArtistELORanker:
             ).then(
                 fn=lambda: gr.update(visible=True),
                 outputs=[export_file]
-            )
-
-            # Profile management events - chain image generation after profile changes
-            create_profile_btn.click(
-                fn=on_create_profile,
-                inputs=[new_profile_input],
-                outputs=[profile_dropdown, new_profile_input, status_msg]
-            ).then(
-                fn=on_generate,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
-            )
-
-            delete_profile_btn.click(
-                fn=on_delete_profile,
-                inputs=[profile_dropdown],
-                outputs=[profile_dropdown, status_msg, leaderboard]
-            ).then(
-                fn=on_generate,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
-            )
-
-            profile_dropdown.change(
-                fn=on_switch_profile,
-                inputs=[profile_dropdown],
-                outputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown, status_msg, leaderboard, history_display]
-            ).then(
-                fn=on_generate,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
-                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
-            )
-
-            # Auto-save settings on change
-            prompt_input.change(
-                fn=on_settings_change,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
-            )
-            negative_prompt_input.change(
-                fn=on_settings_change,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
-            )
-            quality_toggle.change(
-                fn=on_settings_change,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
-            )
-            uc_preset_dropdown.change(
-                fn=on_settings_change,
-                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
             )
 
             # Keyboard shortcuts via JavaScript
