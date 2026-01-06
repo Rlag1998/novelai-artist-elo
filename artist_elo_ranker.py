@@ -861,17 +861,36 @@ class ArtistELORanker:
             self.session = ApiCredential(api_token=SecretStr(api_key))
         return self.session
 
-    def export_leaderboard(self) -> str:
-        """Export full leaderboard sorted by ELO as downloadable text."""
+    def export_leaderboard_csv(self) -> str:
+        """Export full leaderboard sorted by ELO as CSV with detailed stats."""
         sorted_artists = sorted(
             self.elo_system.ratings.items(),
             key=lambda x: x[1],
             reverse=True
         )
-        lines = ["ELO\tArtist\tComparisons"]
-        for artist, rating in sorted_artists:
+        artist_stats = self.history.get_artist_stats()
+
+        lines = ["Rank,Artist,ELO,Comparisons,Wins,Losses,WinRate,Solo_Rounds,Solo_Wins,Solo_WR,Duo_Rounds,Duo_Wins,Duo_WR,Trio_Rounds,Trio_Wins,Trio_WR"]
+
+        for rank, (artist, rating) in enumerate(sorted_artists, 1):
             comparisons = self.elo_system.get_artist_comparison_count(artist)
-            lines.append(f"{rating:.0f}\t{artist}\t{comparisons}")
+            stats = artist_stats.get(artist, {})
+
+            rounds = stats.get('rounds', 0)
+            wins = stats.get('wins', 0)
+            losses = rounds - wins
+            win_rate = (wins / rounds * 100) if rounds > 0 else 0
+
+            solo = stats.get('solo', {'rounds': 0, 'wins': 0})
+            duo = stats.get('duo', {'rounds': 0, 'wins': 0})
+            trio = stats.get('trio', {'rounds': 0, 'wins': 0})
+
+            solo_wr = (solo['wins'] / solo['rounds'] * 100) if solo['rounds'] > 0 else 0
+            duo_wr = (duo['wins'] / duo['rounds'] * 100) if duo['rounds'] > 0 else 0
+            trio_wr = (trio['wins'] / trio['rounds'] * 100) if trio['rounds'] > 0 else 0
+
+            lines.append(f"{rank},{artist},{rating:.0f},{comparisons},{wins},{losses},{win_rate:.1f},{solo['rounds']},{solo['wins']},{solo_wr:.1f},{duo['rounds']},{duo['wins']},{duo_wr:.1f},{trio['rounds']},{trio['wins']},{trio_wr:.1f}")
+
         return "\n".join(lines)
 
     def format_recent_history(self, limit: int = 10) -> str:
@@ -1290,8 +1309,7 @@ class ArtistELORanker:
                     )
                     with gr.Row():
                         refresh_btn = gr.Button("Refresh Leaderboard", size="sm")
-                        export_btn = gr.Button("Export Leaderboard", size="sm")
-                    export_file = gr.File(label="Download", visible=False)
+                    export_file = gr.DownloadButton("Export CSV", size="sm")
 
                     # History panel
                     with gr.Accordion("Recent History", open=False):
@@ -1325,13 +1343,13 @@ class ArtistELORanker:
                     loop.close()
 
             def on_export():
-                """Export leaderboard as downloadable file."""
-                content = self.export_leaderboard()
-                filepath = COMPARISON_IMAGES_DIR / "leaderboard_export.txt"
+                """Export leaderboard as downloadable CSV file."""
+                content = self.export_leaderboard_csv()
+                filepath = COMPARISON_IMAGES_DIR / "leaderboard_export.csv"
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(content)
-                return gr.update(value=str(filepath), visible=True)
+                return str(filepath)
 
             def on_toggle_artists(show):
                 """Toggle visibility of artist tags."""
@@ -1400,8 +1418,8 @@ class ArtistELORanker:
                 outputs=[leaderboard]
             )
 
-            # Export leaderboard
-            export_btn.click(
+            # Export leaderboard - DownloadButton triggers on click
+            export_file.click(
                 fn=on_export,
                 outputs=[export_file]
             )
