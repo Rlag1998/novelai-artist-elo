@@ -1291,12 +1291,7 @@ class ArtistELORanker:
                     with gr.Row():
                         refresh_btn = gr.Button("Refresh Leaderboard", size="sm")
                         export_btn = gr.Button("Export Leaderboard", size="sm")
-                    export_output = gr.Textbox(
-                        label="Export (copy this)",
-                        visible=False,
-                        lines=10,
-                        max_lines=20
-                    )
+                    export_file = gr.File(label="Download", visible=False)
 
                     # History panel
                     with gr.Accordion("Recent History", open=False):
@@ -1330,8 +1325,13 @@ class ArtistELORanker:
                     loop.close()
 
             def on_export():
-                """Export leaderboard as text."""
-                return gr.update(value=self.export_leaderboard(), visible=True)
+                """Export leaderboard as downloadable file."""
+                content = self.export_leaderboard()
+                filepath = COMPARISON_IMAGES_DIR / "leaderboard_export.txt"
+                filepath.parent.mkdir(parents=True, exist_ok=True)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+                return gr.update(value=str(filepath), visible=True)
 
             def on_toggle_artists(show):
                 """Toggle visibility of artist tags."""
@@ -1403,7 +1403,7 @@ class ArtistELORanker:
             # Export leaderboard
             export_btn.click(
                 fn=on_export,
-                outputs=[export_output]
+                outputs=[export_file]
             )
 
             # Keyboard shortcuts via JavaScript
