@@ -1341,9 +1341,7 @@ class ArtistELORanker:
                         self.format_top_artists_display(),
                         label="Top Artists"
                     )
-                    with gr.Row():
-                        refresh_btn = gr.Button("Refresh", size="sm")
-                        export_btn = gr.Button("Export CSV", size="sm")
+                    export_btn = gr.Button("Export Leaderboard as CSV")
                     export_file = gr.File(label="Download", visible=False)
 
                     # History panel
@@ -1446,12 +1444,6 @@ class ArtistELORanker:
                 fn=on_pick_then_generate,
                 inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
-            )
-
-            # Refresh leaderboard
-            refresh_btn.click(
-                fn=lambda: self.format_top_artists_display(),
-                outputs=[leaderboard]
             )
 
             # Export leaderboard - generate CSV and show download link
