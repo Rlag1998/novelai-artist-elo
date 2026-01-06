@@ -1341,18 +1341,23 @@ class ArtistELORanker:
                 "**Shortcuts:** `1` = Pick A, `2` = Pick B, `s` = Skip, `0` = Undo"
             )
 
-            # Profile Management - compact row
-            with gr.Row():
-                profile_dropdown = gr.Dropdown(
-                    label="Profile",
-                    choices=list_profiles(),
-                    value=self.current_profile,
-                    allow_custom_value=True,  # Allow typing new profile names
-                    interactive=True,
-                    scale=3,
-                )
-                create_profile_btn = gr.Button("+ New", size="sm", scale=1)
-                delete_profile_btn = gr.Button("Delete", size="sm", variant="stop", scale=1)
+            # Profile Management - compact group
+            with gr.Group():
+                with gr.Row():
+                    profile_dropdown = gr.Dropdown(
+                        label="Current Profile",
+                        choices=list_profiles(),
+                        value=self.current_profile,
+                        interactive=True,
+                        scale=2,
+                    )
+                    new_profile_input = gr.Textbox(
+                        label="New Profile",
+                        placeholder="name",
+                        scale=1,
+                    )
+                    create_profile_btn = gr.Button("Create", size="sm", min_width=60)
+                    delete_profile_btn = gr.Button("Delete", size="sm", variant="stop", min_width=60)
 
             with gr.Row():
                 # Main comparison area (left side)
@@ -1471,23 +1476,21 @@ class ArtistELORanker:
                     f.write(content)
                 return str(filepath)
 
-            def on_create_profile(current_dropdown_value):
-                """Create a new profile from typed name in dropdown."""
-                # User types a new name in the dropdown (allow_custom_value=True)
-                name = current_dropdown_value
-                if not name or not name.strip():
+            def on_create_profile(new_name):
+                """Create a new profile from text input."""
+                if not new_name or not new_name.strip():
                     return (
                         gr.update(),  # profile_dropdown unchanged
-                        "Type a new profile name in the dropdown, then click '+ New'.",
+                        "",  # clear text input
+                        "Enter a profile name first.",
                     )
-                name = name.strip().replace(" ", "_")
+                name = new_name.strip().replace(" ", "_")
                 existing = list_profiles()
                 if name in existing:
-                    # Just switch to it
-                    settings = self.switch_profile(name)
                     return (
-                        gr.update(choices=existing, value=name),
-                        f"Switched to existing profile: {name}",
+                        gr.update(),
+                        "",
+                        f"Profile '{name}' already exists.",
                     )
                 # Create new profile
                 create_profile(name)
@@ -1495,6 +1498,7 @@ class ArtistELORanker:
                 profiles = list_profiles()
                 return (
                     gr.update(choices=profiles, value=name),
+                    "",  # clear text input
                     f"Created profile: {name}",
                 )
 
@@ -1524,27 +1528,14 @@ class ArtistELORanker:
                 )
 
             def on_switch_profile(profile_name):
-                """Switch to a different profile or handle new typed name."""
+                """Switch to a different profile."""
                 if not profile_name:
                     return (
-                        gr.update(),  # prompt_input
-                        gr.update(),  # negative_prompt_input
-                        gr.update(),  # quality_toggle
-                        gr.update(),  # uc_preset
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
+                        gr.update(),
                         "No profile selected.",
-                        self.format_top_artists_display(),
-                        self.format_recent_history(),
-                    )
-                # Check if it's an existing profile
-                existing = list_profiles()
-                if profile_name not in existing:
-                    # It's a new typed name - don't switch yet, wait for Create button
-                    return (
-                        gr.update(),
-                        gr.update(),
-                        gr.update(),
-                        gr.update(),
-                        f"Type '+ New' to create profile: {profile_name}",
                         self.format_top_artists_display(),
                         self.format_recent_history(),
                     )
@@ -1643,8 +1634,8 @@ class ArtistELORanker:
             # Profile management events
             create_profile_btn.click(
                 fn=on_create_profile,
-                inputs=[profile_dropdown],
-                outputs=[profile_dropdown, status_msg]
+                inputs=[new_profile_input],
+                outputs=[profile_dropdown, new_profile_input, status_msg]
             )
 
             delete_profile_btn.click(
