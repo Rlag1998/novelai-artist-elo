@@ -84,7 +84,7 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
    - Use keyboard shortcuts for faster voting:
      - `1` - Pick Image A
      - `2` - Pick Image B
-     - `s` - Skip (both bad)
+     - `s` - Skip (no ELO changes, generates new pair)
      - `0` - Undo last selection
 
 4. **View rankings**
@@ -235,6 +235,8 @@ The system uses an individual-based ELO calculation:
 3. **ELO Update**: Each winning artist gains ELO based on their individual rating vs. the losing team's average
 4. **Zero-Sum**: Total ELO gained equals total ELO lost (scaled for fairness)
 5. **Pool Rotation**: Underperformers may be rotated out; high-ELO artists are more likely to return
+
+**Note:** If the same artist appears on both sides of a comparison, they are excluded from ELO changes (they can't win or lose against themselves). Skipping a comparison also results in no ELO changes.
 
 ### Pool Rotation Strategy
 

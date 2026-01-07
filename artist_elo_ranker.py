@@ -1329,7 +1329,7 @@ class ArtistELORanker:
                     # Show artists toggle, skip, and undo buttons
                     with gr.Row():
                         show_artists_toggle = gr.Checkbox(label="Show artist tags", value=False)
-                        skip_btn = gr.Button("Skip (both bad)", variant="secondary", size="sm")
+                        skip_btn = gr.Button("Skip", variant="secondary", size="sm")
                         undo_btn = gr.Button("Undo Last Selection", variant="stop", size="sm", interactive=False)
 
                     # Result display
