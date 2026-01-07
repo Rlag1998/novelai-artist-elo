@@ -118,12 +118,24 @@ The statistics panel shows the current state of your artist pool and ranking pro
 - **Comparisons**: Total number of comparisons made
 - **Artists rated**: How many unique artists have been evaluated
 - **Pool**: Current active pool size vs total available artists
-- **Pool Health**: Breakdown of artists above/below average and newcomers
+- **Pool Health**: Breakdown of artists above/below average and newcomers (<5 matches)
 - **Most likely to rotate out**: Artists at risk of being removed from the pool
+
+### Pool Changes
+
+The "Pool Changes" section (below Pool Health) shows recent artist rotations, newest first:
+
+<img src="screenshots/pool_changes.png" width="350">
+
+- **Bold names with [new]**: Artists newly added to the pool
+- **Bold names with [returning]**: Previously rated artists returning to the pool
+- **~~Strikethrough names~~**: Artists removed from the pool
 
 ### Export to CSV
 
-Click "Export CSV" to download the full leaderboard as a CSV file with detailed statistics:
+Click "Export Leaderboard as CSV" to download the full leaderboard as a CSV file with detailed statistics:
+
+<img src="screenshots/export_leaderboard.png" width="400">
 
 - Rank, Artist, ELO, Total Comparisons
 - Wins, Losses, Win Rate
@@ -136,6 +148,8 @@ The export includes ALL rated artists (not just the top 30 shown in the UI).
 ### Comparison History
 
 The "Comparison History" accordion shows your last 10 comparison results (newest first), displaying which artist combinations won against which. Useful for reviewing your choices and spotting patterns.
+
+<img src="screenshots/comparison_history.png" width="400">
 
 ### Custom Prompts & Generation Settings
 
