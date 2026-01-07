@@ -1407,7 +1407,7 @@ class ArtistELORanker:
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
             )
 
-            # Pick A: update ELO, then auto-generate next pair
+            # Pick A: update ELO, then auto-generate next pair, then refresh CSV
             pick_a_btn.click(
                 fn=lambda: self.pick_winner("A"),
                 outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
@@ -1415,9 +1415,12 @@ class ArtistELORanker:
                 fn=on_pick_then_generate,
                 inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
+            ).then(
+                fn=on_export,
+                outputs=[export_file]
             )
 
-            # Pick B: update ELO, then auto-generate next pair
+            # Pick B: update ELO, then auto-generate next pair, then refresh CSV
             pick_b_btn.click(
                 fn=lambda: self.pick_winner("B"),
                 outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
@@ -1425,12 +1428,18 @@ class ArtistELORanker:
                 fn=on_pick_then_generate,
                 inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
+            ).then(
+                fn=on_export,
+                outputs=[export_file]
             )
 
-            # Undo: restore previous state and images
+            # Undo: restore previous state and images, then refresh CSV
             undo_btn.click(
                 fn=on_undo,
                 outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
+            ).then(
+                fn=on_export,
+                outputs=[export_file]
             )
 
             # Toggle artist visibility
