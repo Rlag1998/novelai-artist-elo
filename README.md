@@ -239,7 +239,7 @@ The system uses an individual-based ELO calculation:
 ### Pool Rotation Strategy
 
 - **Removal Weight**: `confidence * underperformance²`
-  - Confidence: 0 if <5 matches (protected), 1 if ≥5 matches
+  - Confidence: matches / 5 (capped at 1.0)
   - Underperformance: relative to pool's best performer
 - **Addition Weight**: `(ELO - min_ELO + 100)²`
   - Squared preference for high-ELO artists

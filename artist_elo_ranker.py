@@ -334,8 +334,8 @@ class ActivePool:
                 matches = self.elo_system.get_artist_comparison_count(artist)
                 elo = self.elo_system.get_rating(artist)
 
-                # Confidence: require 5+ matches before eligible for removal
-                confidence = 1.0 if matches >= 5 else 0.0
+                # Confidence: need enough matches before judging (0-5 matches → 0-1)
+                confidence = min(1.0, matches / 5.0)
 
                 # Underperformance: relative to pool's best performer (squared)
                 # Squared so worst performers are MUCH more likely to be removed
