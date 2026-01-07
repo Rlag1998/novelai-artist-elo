@@ -225,6 +225,8 @@ All configuration is done via environment variables in the `.env` file:
 | `POOL_SIZE` | 150 | Active pool size |
 | `SERVER_HOST` | 127.0.0.1 | Server bind address |
 | `SERVER_PORT` | 7860 | Server port |
+| `DEFAULT_PROMPT` | (built-in) | Default positive prompt. Use `{artist_placeholder}` for artist tags. Wrap in quotes. |
+| `NEGATIVE_PROMPT` | (built-in) | Default negative prompt. Wrap in quotes. |
 
 ## How ELO Ranking Works
 
