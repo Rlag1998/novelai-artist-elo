@@ -104,11 +104,18 @@ def test_build_generation_reuses_v45_payload_except_model():
     assert v5 == baseline
 
 
-def test_build_generation_honours_uc_preset_disabled():
-    gen = ranker.build_generation(prompt="1girl", negative_prompt="lowres", uc_preset=-1, seed=1)
+@pytest.mark.parametrize("index", [0, 1, 2, 3])
+def test_build_generation_preserves_uc_preset_index(index):
+    """The UI's preset index must reach the request unchanged.
+
+    Index -1 ("None") is deliberately not covered: novelai-python 0.7.12 keeps
+    its default preset 0 when handed ucPreset=None, so the ranker has never
+    actually disabled the preset. That predates this change and is tracked
+    separately."""
+    gen = ranker.build_generation(prompt="1girl", negative_prompt="lowres", uc_preset=index, seed=1)
     params = gen.model_dump(mode="json", exclude_none=True)["parameters"]
-    assert "ucPreset" not in params
-    assert params["negative_prompt"] == "lowres"
+    assert params["ucPreset"] == index
+    assert params["negative_prompt"].endswith("lowres")
 
 
 def test_model_id_env_override(monkeypatch):

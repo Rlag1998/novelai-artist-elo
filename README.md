@@ -1,6 +1,6 @@
 # Artist ELO Ranking System for NovelAI
 
-A web-based blind comparison system that ranks Danbooru artist tags by generating AI images with [NovelAI](https://novelai.net/) and letting you pick your preferred results. Artists gain or lose ELO rating based on the outcomes.
+A web-based blind comparison system that ranks Danbooru artist tags by generating AI images with [NovelAI](https://novelai.net/) and letting you pick your preferred results. Artists gain or lose ELO rating based on the outcomes. Images are generated with NovelAI Diffusion V5 Full by default.
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -18,6 +18,7 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 - **Generation Settings**: Toggle quality tags, choose from 5 UC (Undesired Content) presets including "None"
 - **Export to CSV**: Download full leaderboard with detailed stats
 - **Comparison History**: View your last 10 comparison results
+- **NovelAI Diffusion V5 Full**: Generates with NovelAI's current model by default; pin another model with `NAI_MODEL`
 
 ## Prerequisites
 
@@ -210,6 +211,18 @@ sakimichan
 
 You can create your own list or find Danbooru artist tag compilations online.
 
+## Image Model
+
+Images are generated with **NovelAI Diffusion V5 Full** (`nai-diffusion-5-full`) by default. To use a different model, set `NAI_MODEL` in your `.env` file:
+
+```
+NAI_MODEL=nai-diffusion-4-5-full
+```
+
+Ratings describe how artist tags perform on the model that produced the images. When you switch models, back up `artist_elo_ratings.json`, `active_pool.json` and `comparison_history.json` and start a fresh set. Otherwise the leaderboard mixes results from two different models.
+
+**Implementation note.** `novelai-python` 0.7.12, the latest release, predates V5 and has no enum entry for it. Handing the V5 id straight to the library produces a request in the old pre-V4 format, without the `v4_prompt` and `v4_negative_prompt` fields. V5 uses the same request format as V4.5, so the ranker builds each request as V4.5 Full and swaps the model id in before sending. This lives in `build_generation()` in `artist_elo_ranker.py` and is covered by `tests/test_model_v5.py`. Once the library learns the V5 id, the swap is skipped automatically.
+
 ## Configuration
 
 All configuration is done via environment variables in the `.env` file:
@@ -217,6 +230,7 @@ All configuration is done via environment variables in the `.env` file:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NOVELAI_API_KEY` | (required) | Your NovelAI API token |
+| `NAI_MODEL` | nai-diffusion-5-full | NovelAI model id used for generation. See [Image Model](#image-model). |
 | `NAI_STEPS` | 28 | Number of diffusion steps |
 | `NAI_IMG_WIDTH` | 1024 | Image width in pixels |
 | `NAI_IMG_HEIGHT` | 1024 | Image height in pixels |
@@ -268,6 +282,9 @@ novelai-artist-elo/
 ├── artist_elo_ranker.py      # Main application
 ├── config.py                 # Configuration management
 ├── requirements.txt          # Python dependencies
+├── requirements-dev.txt      # Test dependencies
+├── tests/                    # Pytest suite
+├── .github/workflows/        # CI: runs the tests on every push and pull request
 ├── .env.example             # Example environment file
 ├── .env                     # Your environment file (create this)
 ├── .gitignore               # Git ignore rules
@@ -299,6 +316,7 @@ novelai-artist-elo/
 
 ### Images fail to generate
 - Check your NovelAI subscription is active
+- If you set `NAI_MODEL`, check the model id is one NovelAI currently serves
 - Verify your API key is correct
 - Check your internet connection
 
@@ -310,6 +328,23 @@ If you see errors like `Unknown compiler(s): [['cl'], ['gcc'], ['clang']...]` wh
 2. Run the installer and select **"Desktop development with C++"** workload
 3. Install and restart your terminal
 4. Try `pip install -r requirements.txt` again
+
+## Development
+
+Install the test dependencies and run the suite:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The suite runs offline. One test, `test_live_generation_is_v5`, makes a real NovelAI call and checks that the returned PNG was rendered by V5. It is skipped unless you opt in:
+
+```bash
+NAI_LIVE_TEST=1 pytest -q tests/test_model_v5.py -k live
+```
+
+Pull requests run the suite on GitHub Actions for Python 3.11 and 3.13.
 
 ## License
 
