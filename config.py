@@ -54,6 +54,10 @@ STEPS = int(os.getenv("NAI_STEPS", "28"))
 IMG_WIDTH = int(os.getenv("NAI_IMG_WIDTH", "1024"))
 IMG_HEIGHT = int(os.getenv("NAI_IMG_HEIGHT", "1024"))
 
+# NovelAI model id. Defaults to NovelAI Diffusion V5 Full. Set NAI_MODEL to pin
+# another model, for example nai-diffusion-4-5-full.
+MODEL_ID = os.getenv("NAI_MODEL", "nai-diffusion-5-full")
+
 
 # --------------------------------------------------------------------------------
 # ELO System Parameters

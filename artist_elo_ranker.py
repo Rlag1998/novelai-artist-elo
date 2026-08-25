@@ -30,6 +30,7 @@ from config import (
     COMPARISON_IMAGES_DIR,
     COMPARISON_HISTORY_FILE,
     ACTIVE_POOL_FILE,
+    MODEL_ID,
     STEPS,
     IMG_WIDTH,
     IMG_HEIGHT,
@@ -48,9 +49,71 @@ from config import (
 # NovelAI Model Configuration
 # --------------------------------------------------------------------------------
 
-MODEL = Model.NAI_DIFFUSION_4_5_FULL
 SAMPLER = Sampler.K_EULER_ANCESTRAL
 UC_PRESET = UCPreset.TYPE0
+
+# Maps the UI's UC preset index to the library enum (-1 = disabled).
+UC_PRESET_MAP = {
+    -1: None,
+    0: UCPreset.TYPE0,
+    1: UCPreset.TYPE1,
+    2: UCPreset.TYPE2,
+    3: UCPreset.TYPE3,
+}
+
+# novelai-python 0.7.12, the latest release, has no enum member for NovelAI
+# Diffusion V5. Its build_generate() treats an unknown model string as a
+# pre-V4 Stable Diffusion model and silently drops the V4-family fields
+# (v4_prompt, v4_negative_prompt). V5 uses the V4.5 request format, so the
+# request is built as V4.5 Full and the model id is swapped in just before it
+# is sent. If a newer library knows the id, the enum is used directly and no
+# swap happens.
+V4_FAMILY_BUILD_MODEL = Model.NAI_DIFFUSION_4_5_FULL
+
+
+def resolve_model(model_id: str) -> Tuple[Model, Optional[str]]:
+    """
+    Decide how to build a request for ``model_id``.
+
+    Returns a pair: the model to hand to build_generate(), and the model id to
+    write into the request afterwards, or None when the library already knows
+    the model and no swap is needed.
+    """
+    try:
+        return Model(model_id), None
+    except ValueError:
+        return V4_FAMILY_BUILD_MODEL, model_id
+
+
+def build_generation(
+    prompt: str,
+    negative_prompt: str = None,
+    quality_toggle: bool = True,
+    uc_preset: int = 0,
+    *,
+    model_id: str = None,
+    seed: int = None,
+) -> GenerateImageInfer:
+    """Build the image request the ranker sends to NovelAI."""
+    model_id = model_id or MODEL_ID
+    build_model, override_model = resolve_model(model_id)
+    gen = GenerateImageInfer.build_generate(
+        prompt=prompt,
+        width=IMG_WIDTH,
+        height=IMG_HEIGHT,
+        model=build_model,
+        steps=STEPS,
+        seed=seed,
+        sampler=SAMPLER,
+        negative_prompt=negative_prompt if negative_prompt else NEGATIVE_PROMPT,
+        ucPreset=UC_PRESET_MAP.get(uc_preset, UCPreset.TYPE0),
+        qualityToggle=quality_toggle,
+        decrisp_mode=False,
+        variety_boost=False,
+    )
+    if override_model is not None:
+        gen.model = override_model
+    return gen
 
 
 # --------------------------------------------------------------------------------
@@ -622,27 +685,7 @@ async def generate_image(
 ) -> bool:
     """Generate a single image and save it."""
     try:
-        # Map UC preset index to enum (-1 = None/disabled)
-        uc_preset_map = {
-            -1: None,  # Disabled
-            0: UCPreset.TYPE0,
-            1: UCPreset.TYPE1,
-            2: UCPreset.TYPE2,
-            3: UCPreset.TYPE3,
-        }
-        gen = GenerateImageInfer.build_generate(
-            prompt=prompt,
-            width=IMG_WIDTH,
-            height=IMG_HEIGHT,
-            model=MODEL,
-            steps=STEPS,
-            sampler=SAMPLER,
-            negative_prompt=negative_prompt if negative_prompt else NEGATIVE_PROMPT,
-            ucPreset=uc_preset_map.get(uc_preset, UCPreset.TYPE0),
-            qualityToggle=quality_toggle,
-            decrisp_mode=False,
-            variety_boost=False,
-        )
+        gen = build_generation(prompt, negative_prompt, quality_toggle, uc_preset)
 
         resp = await gen.request(session=session)
         resp: ImageGenerateResp
