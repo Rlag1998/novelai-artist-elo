@@ -52,9 +52,16 @@ from config import (
 SAMPLER = Sampler.K_EULER_ANCESTRAL
 UC_PRESET = UCPreset.TYPE0
 
-# Maps the UI's UC preset index to the library enum (-1 = disabled).
+# NovelAI's "no preset" code for V4-family models. novelai-python has no enum
+# member for it, but get_default_uc_preset() returns an empty string for 4, so
+# nothing is merged into the negative prompt. Passing None instead does NOT
+# disable the preset: the library treats None as unspecified and falls back to
+# preset 0 (Heavy).
+UC_PRESET_NONE = 4
+
+# Maps the UI's UC preset index to what the request carries (-1 = None/disabled).
 UC_PRESET_MAP = {
-    -1: None,
+    -1: UC_PRESET_NONE,
     0: UCPreset.TYPE0,
     1: UCPreset.TYPE1,
     2: UCPreset.TYPE2,
