@@ -9,12 +9,14 @@ based on the outcomes.
 
 import asyncio
 import json
+import logging
 import random
 import re
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, NamedTuple, Optional, Tuple
 
 import gradio as gr
 from pydantic import SecretStr
@@ -31,6 +33,7 @@ from config import (
     COMPARISON_HISTORY_FILE,
     ACTIVE_POOL_FILE,
     MODEL_ID,
+    SEED_MODE,
     STEPS,
     IMG_WIDTH,
     IMG_HEIGHT,
@@ -44,6 +47,12 @@ from config import (
     NEGATIVE_PROMPT,
     DEFAULT_PROMPT,
 )
+
+logger = logging.getLogger("artist_elo_ranker")
+
+# The active pool is read by the background prefetch and mutated by votes.
+POOL_LOCK = threading.RLock()
+
 
 # --------------------------------------------------------------------------------
 # NovelAI Model Configuration
@@ -682,31 +691,79 @@ def insert_artist_tags(prompt: str, artist_tags: str) -> str:
 # Image Generation
 # --------------------------------------------------------------------------------
 
+# novelai_python exceptions stringify to '' and carry their detail on .message
+# and .code, so errors are described from those. NovelAI serves one generation
+# per account at a time and answers a second one with 429, which is worth a
+# short wait and a retry. 5xx are transient.
+MAX_ATTEMPTS = 4
+RETRY_DELAYS = (3, 6, 9)
+RETRYABLE_CODES = {"429", "500", "502", "503", "504"}
+
+
+def describe_error(e: BaseException) -> str:
+    """Human-readable error text that survives exceptions with an empty str()."""
+    code = getattr(e, "code", None)
+    msg = getattr(e, "message", None) or str(e) or "(no message)"
+    return f"{type(e).__name__} code={code} {msg}"
+
+
+async def _retry_sleep(seconds: float):
+    await asyncio.sleep(seconds)
+
+
+def new_seed() -> int:
+    return random.randint(0, 2 ** 32 - 1)
+
+
 async def generate_image(
     session: ApiCredential,
     prompt: str,
     output_path: Path,
     negative_prompt: str = None,
     quality_toggle: bool = True,
-    uc_preset: int = 0
+    uc_preset: int = 0,
+    seed: int = None,
 ) -> bool:
-    """Generate a single image and save it."""
-    try:
-        gen = build_generation(prompt, negative_prompt, quality_toggle, uc_preset)
+    """Generate a single image and save it. Retries transient NovelAI errors."""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            gen = build_generation(prompt, negative_prompt, quality_toggle, uc_preset, seed=seed)
+            resp = await gen.request(session=session)
+            resp: ImageGenerateResp
+            _, file_bytes = resp.files[0]
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(file_bytes)
+            return True
+        except Exception as e:
+            code = str(getattr(e, "code", None))
+            if code in RETRYABLE_CODES and attempt < MAX_ATTEMPTS:
+                delay = RETRY_DELAYS[min(attempt - 1, len(RETRY_DELAYS) - 1)]
+                logger.warning("Image generation attempt %d/%d failed: %s. Retrying in %ss.",
+                               attempt, MAX_ATTEMPTS, describe_error(e), delay)
+                await _retry_sleep(delay)
+                continue
+            logger.error("Image generation failed on attempt %d/%d: %s",
+                         attempt, MAX_ATTEMPTS, describe_error(e))
+            return False
+    return False
 
-        resp = await gen.request(session=session)
-        resp: ImageGenerateResp
 
-        _, file_bytes = resp.files[0]
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "wb") as f:
-            f.write(file_bytes)
-
-        return True
-    except Exception as e:
-        print(f"Error generating image: {e}")
-        return False
+@dataclass
+class ComparisonPair:
+    """Everything about one round: the two images and how they were made."""
+    path_a: Path
+    path_b: Path
+    artists_a: List[str]
+    artists_b: List[str]
+    prompt_a: str
+    prompt_b: str
+    base_prompt: str
+    negative_prompt: Optional[str]
+    quality_toggle: bool
+    uc_preset: int
+    seed_a: Optional[int]
+    seed_b: Optional[int]
+    model_id: str
 
 
 async def generate_comparison_pair(
@@ -716,47 +773,131 @@ async def generate_comparison_pair(
     output_dir: Path,
     negative_prompt: str = None,
     quality_toggle: bool = True,
-    uc_preset: int = 0
-) -> Tuple[Optional[Path], Optional[Path], List[str], List[str]]:
+    uc_preset: int = 0,
+    seed_mode: str = None,
+) -> Optional[ComparisonPair]:
     """
     Generate two images with different artist combinations.
-    Returns: (image_a_path, image_b_path, artists_a, artists_b)
+    Returns a ComparisonPair, or None if either image failed.
     """
-    # Get two different artist combinations (overlap is allowed, handled in ELO calc)
-    artists_a = artist_manager.get_random_combination()
-    artists_b = artist_manager.get_random_combination()
+    seed_mode = (seed_mode or SEED_MODE).lower()
 
-    # Ensure they're not identical (but overlap is fine)
-    max_attempts = 50
-    attempts = 0
-    while set(artists_a) == set(artists_b) and attempts < max_attempts:
+    # Two different artist combinations (overlap is allowed, handled in ELO calc)
+    with POOL_LOCK:
+        artists_a = artist_manager.get_random_combination()
         artists_b = artist_manager.get_random_combination()
-        attempts += 1
+        attempts = 0
+        while set(artists_a) == set(artists_b) and attempts < 50:
+            artists_b = artist_manager.get_random_combination()
+            attempts += 1
 
-    # Format artist tags
-    tags_a = artist_manager.format_artist_tags(artists_a)
-    tags_b = artist_manager.format_artist_tags(artists_b)
+    prompt_a = insert_artist_tags(base_prompt, artist_manager.format_artist_tags(artists_a))
+    prompt_b = insert_artist_tags(base_prompt, artist_manager.format_artist_tags(artists_b))
 
-    # Create prompts
-    prompt_a = insert_artist_tags(base_prompt, tags_a)
-    prompt_b = insert_artist_tags(base_prompt, tags_b)
+    if seed_mode == "shared":
+        seed_a = seed_b = new_seed()
+    else:
+        seed_a = new_seed()
+        seed_b = new_seed()
+        while seed_b == seed_a:
+            seed_b = new_seed()
 
-    # Generate unique filenames
     timestamp = int(time.time() * 1000)
     path_a = output_dir / f"compare_{timestamp}_a.png"
     path_b = output_dir / f"compare_{timestamp}_b.png"
 
-    print(f"Generating image A with artists: {artists_a}")
-    print(f"Prompt A: {prompt_a[:200]}...")
-    success_a = await generate_image(session, prompt_a, path_a, negative_prompt, quality_toggle, uc_preset)
+    logger.info("Generating image A with artists %s (seed %s)", artists_a, seed_a)
+    if not await generate_image(session, prompt_a, path_a, negative_prompt, quality_toggle, uc_preset, seed=seed_a):
+        return None
+    logger.info("Generating image B with artists %s (seed %s)", artists_b, seed_b)
+    if not await generate_image(session, prompt_b, path_b, negative_prompt, quality_toggle, uc_preset, seed=seed_b):
+        return None
 
-    print(f"Generating image B with artists: {artists_b}")
-    print(f"Prompt B: {prompt_b[:200]}...")
-    success_b = await generate_image(session, prompt_b, path_b, negative_prompt, quality_toggle, uc_preset)
+    return ComparisonPair(
+        path_a=path_a, path_b=path_b,
+        artists_a=artists_a, artists_b=artists_b,
+        prompt_a=prompt_a, prompt_b=prompt_b,
+        base_prompt=base_prompt, negative_prompt=negative_prompt,
+        quality_toggle=quality_toggle, uc_preset=uc_preset,
+        seed_a=seed_a, seed_b=seed_b, model_id=MODEL_ID,
+    )
 
-    if success_a and success_b:
-        return path_a, path_b, artists_a, artists_b
-    return None, None, [], []
+
+# --------------------------------------------------------------------------------
+# Background prefetch
+# --------------------------------------------------------------------------------
+
+class PairSettings(NamedTuple):
+    """The prompt settings a pair was generated with. A prefetched pair is only
+    served if these still match what the user has selected."""
+    base_prompt: str
+    negative_prompt: Optional[str]
+    quality_toggle: bool
+    uc_preset: int
+
+
+class PairPrefetcher:
+    """
+    Generates the next comparison pair in the background while the user judges
+    the current one, so a round rarely waits on NovelAI.
+
+    NovelAI serves one generation per account at a time, so every generation,
+    prefetched or immediate, runs under a single lock.
+    """
+
+    def __init__(self, generate_fn: Callable[[PairSettings], Optional[ComparisonPair]]):
+        self._generate = generate_fn
+        self._gen_lock = threading.Lock()   # one generation at a time
+        self._state = threading.Lock()      # guards the fields below
+        self._thread: Optional[threading.Thread] = None
+        self._in_flight: Optional[PairSettings] = None
+        self._ready: Optional[Tuple[PairSettings, ComparisonPair]] = None
+
+    def start(self, settings: PairSettings):
+        """Begin prefetching a pair for these settings, unless one is already
+        in flight or waiting."""
+        with self._state:
+            if self._in_flight == settings:
+                return
+            if self._ready is not None and self._ready[0] == settings:
+                return
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._in_flight = settings
+            self._thread = threading.Thread(target=self._run, args=(settings,), daemon=True)
+            self._thread.start()
+
+    def _run(self, settings: PairSettings):
+        pair = None
+        try:
+            with self._gen_lock:
+                pair = self._generate(settings)
+        except Exception as e:
+            logger.error("Prefetch failed: %s", describe_error(e))
+        with self._state:
+            if self._in_flight == settings:
+                self._in_flight = None
+                self._ready = (settings, pair) if pair is not None else None
+
+    def take(self, settings: PairSettings, wait: bool = True) -> Optional[ComparisonPair]:
+        """Return and consume the ready pair if it matches these settings.
+        Waits for a matching prefetch that is still in flight. A ready pair made
+        with different settings is discarded."""
+        with self._state:
+            thread = self._thread if (wait and self._in_flight == settings) else None
+        if thread is not None:
+            thread.join()
+        with self._state:
+            if self._ready is None:
+                return None
+            ready_settings, pair = self._ready
+            self._ready = None
+            return pair if ready_settings == settings else None
+
+    def generate_now(self, settings: PairSettings) -> Optional[ComparisonPair]:
+        """Generate synchronously, waiting for any in-flight generation first."""
+        with self._gen_lock:
+            return self._generate(settings)
 
 
 # --------------------------------------------------------------------------------
@@ -765,13 +906,29 @@ async def generate_comparison_pair(
 
 @dataclass
 class ComparisonRecord:
-    """Record of a single comparison."""
+    """Record of a single comparison, with everything needed to reproduce it."""
     timestamp: float
     artists_a: List[str]
     artists_b: List[str]
     winner: str  # "A" or "B"
     image_a_path: str
     image_b_path: str
+    prompt_a: Optional[str] = None
+    prompt_b: Optional[str] = None
+    base_prompt: Optional[str] = None
+    negative_prompt: Optional[str] = None
+    quality_toggle: Optional[bool] = None
+    uc_preset: Optional[int] = None
+    seed_a: Optional[int] = None
+    seed_b: Optional[int] = None
+    model_id: Optional[str] = None
+
+
+def format_side_bias(bias: dict) -> str:
+    """One line for the stats panel: how often the left image wins."""
+    if not bias.get("decided"):
+        return "**Side bias:** no decided rounds yet"
+    return f"**Side bias:** A picked {bias['a_rate'] * 100:.0f}% of {bias['decided']} decided rounds"
 
 
 class ComparisonHistory:
@@ -795,15 +952,16 @@ class ComparisonHistory:
 
     def add_record(self, record: ComparisonRecord):
         """Add a comparison record."""
-        self.records.append({
-            "timestamp": record.timestamp,
-            "artists_a": record.artists_a,
-            "artists_b": record.artists_b,
-            "winner": record.winner,
-            "image_a_path": record.image_a_path,
-            "image_b_path": record.image_b_path
-        })
+        self.records.append(asdict(record))
         self.save()
+
+    def get_side_bias(self) -> dict:
+        """How often side A wins among decided rounds. A rate far from 0.5 over
+        many rounds suggests a left/right habit rather than a real preference."""
+        a = sum(1 for r in self.records if r.get("winner") == "A")
+        b = sum(1 for r in self.records if r.get("winner") == "B")
+        decided = a + b
+        return {"a_wins": a, "b_wins": b, "decided": decided, "a_rate": (a / decided) if decided else None}
 
     def get_artist_stats(self) -> dict:
         """
@@ -887,6 +1045,7 @@ class UndoState:
     prev_image_b: Optional[str] = None
     prev_artists_a: List[str] = field(default_factory=list)
     prev_artists_b: List[str] = field(default_factory=list)
+    prev_pair: Optional["ComparisonPair"] = None
 
 
 class ArtistELORanker:
@@ -905,7 +1064,11 @@ class ArtistELORanker:
         self.current_image_b: Optional[Path] = None
         self.current_artists_a: List[str] = []
         self.current_artists_b: List[str] = []
+        self.current_pair: Optional[ComparisonPair] = None
         self.current_prompt: str = DEFAULT_PROMPT
+
+        # Next pair is generated while the user judges the current one
+        self.prefetcher = PairPrefetcher(self._generate_pair_sync)
 
         # Undo state
         self.last_undo_state: Optional[UndoState] = None
@@ -924,6 +1087,18 @@ class ArtistELORanker:
             api_key = get_api_key()
             self.session = ApiCredential(api_token=SecretStr(api_key))
         return self.session
+
+    def _generate_pair_sync(self, settings: PairSettings) -> Optional[ComparisonPair]:
+        """Run one round's generation to completion on its own event loop."""
+        session = self.get_session()
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(generate_comparison_pair(
+                settings.base_prompt, self.artist_manager, session, COMPARISON_IMAGES_DIR,
+                settings.negative_prompt, settings.quality_toggle, settings.uc_preset,
+            ))
+        finally:
+            loop.close()
 
     def export_leaderboard_csv(self) -> str:
         """Export full leaderboard sorted by ELO as CSV with detailed stats."""
@@ -1026,7 +1201,8 @@ class ArtistELORanker:
         lines.append("")
         lines.append(f"**Comparisons:** {self.elo_system.comparison_count}  ")
         lines.append(f"**Artists rated:** {len(self.elo_system.ratings)}  ")
-        lines.append(f"**Pool:** {pool_stats.get('size', 0)}/{pool_stats.get('total_artists', 0)}")
+        lines.append(f"**Pool:** {pool_stats.get('size', 0)}/{pool_stats.get('total_artists', 0)}  ")
+        lines.append(format_side_bias(self.history.get_side_bias()))
 
         # Pool health breakdown
         lines.append("")
@@ -1062,28 +1238,22 @@ class ArtistELORanker:
 
         return "\n".join(lines)
 
-    async def generate_new_comparison(self, custom_prompt: str, custom_negative_prompt: str = "", quality_toggle: bool = True, uc_preset: int = 0):
-        """Generate a new pair of images for comparison."""
-        # Use custom prompt if provided, otherwise default
+    def generate_new_comparison(self, custom_prompt: str, custom_negative_prompt: str = "", quality_toggle: bool = True, uc_preset: int = 0):
+        """Show the next pair: the prefetched one if the settings still match,
+        otherwise generate now. Then start prefetching the one after."""
         base_prompt = custom_prompt.strip() if custom_prompt.strip() else DEFAULT_PROMPT
-
-        # Use custom negative prompt if provided, otherwise None (will use default)
         negative_prompt = custom_negative_prompt.strip() if custom_negative_prompt.strip() else None
 
-        # Remove any existing artist tags from the prompt
+        # Remove any existing artist tags from the prompt and ensure a placeholder
         base_prompt = remove_artist_tags(base_prompt)
-
-        # Ensure we have the artist placeholder or a clean prompt
         if "{artist_placeholder}" not in base_prompt:
-            # Add placeholder if not present
             base_prompt = insert_artist_tags(base_prompt, "{artist_placeholder}")
 
         self.current_prompt = base_prompt
 
         try:
-            session = self.get_session()
-        except ValueError as e:
-            # API key not configured
+            self.get_session()
+        except ValueError:
             error_msg = (
                 "**API Key Not Configured**\n\n"
                 "Please set up your NovelAI API key:\n\n"
@@ -1093,64 +1263,41 @@ class ArtistELORanker:
                 "Get your API key from [NovelAI](https://novelai.net/) → Account Settings → Get Persistent API Token"
             )
             return (
-                None,
-                None,
-                error_msg,
-                self.format_top_artists_display(),
-                "",
-                "",
-                gr.update(interactive=False),
-                gr.update(interactive=False),
-                gr.update(interactive=False),
+                None, None, error_msg, self.format_top_artists_display(), "", "",
+                gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False),
             )
 
-        path_a, path_b, artists_a, artists_b = await generate_comparison_pair(
-            base_prompt,
-            self.artist_manager,
-            session,
-            COMPARISON_IMAGES_DIR,
-            negative_prompt,
-            quality_toggle,
-            uc_preset
+        settings = PairSettings(base_prompt, negative_prompt, quality_toggle, uc_preset)
+        pair = self.prefetcher.take(settings)
+        served_from_prefetch = pair is not None
+        if pair is None:
+            pair = self.prefetcher.generate_now(settings)
+
+        if pair is None:
+            return (
+                None, None, "Error generating images. Please try again.",
+                self.format_top_artists_display(), "", "",
+                gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False),
+            )
+
+        self.current_pair = pair
+        self.current_image_a = pair.path_a
+        self.current_image_b = pair.path_b
+        self.current_artists_a = pair.artists_a
+        self.current_artists_b = pair.artists_b
+        self.selection_made = False
+        # last_undo_state persists so the previous pick can still be undone
+
+        # The next pair renders while this one is being judged
+        self.prefetcher.start(settings)
+
+        status = "Next pair was ready. Pick your preferred image." if served_from_prefetch \
+            else "Images generated! Pick your preferred image."
+        can_undo = self.last_undo_state is not None
+        return (
+            str(pair.path_a), str(pair.path_b), status, self.format_top_artists_display(), "", "",
+            gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=can_undo),
         )
-
-        if path_a and path_b:
-            self.current_image_a = path_a
-            self.current_image_b = path_b
-            self.current_artists_a = artists_a
-            self.current_artists_b = artists_b
-
-            # Reset selection state for new comparison
-            # BUT keep undo state so user can still undo the previous selection!
-            self.selection_made = False
-            # Don't clear last_undo_state here - it persists until next selection
-
-            # Undo is available if we have a previous state to restore
-            can_undo = self.last_undo_state is not None
-
-            return (
-                str(path_a),
-                str(path_b),
-                "Images generated! Pick your preferred image.",
-                self.format_top_artists_display(),
-                "",  # Clear result_msg
-                "",  # Clear details_msg
-                gr.update(interactive=True),   # Enable pick_a
-                gr.update(interactive=True),   # Enable pick_b
-                gr.update(interactive=can_undo),  # Undo available if we have state
-            )
-        else:
-            return (
-                None,
-                None,
-                "Error generating images. Please try again.",
-                self.format_top_artists_display(),
-                "",
-                "",
-                gr.update(interactive=False),
-                gr.update(interactive=False),
-                gr.update(interactive=False),
-            )
 
     def pick_winner(self, winner: str):
         """Process a winner selection. Returns tuple for UI update."""
@@ -1190,7 +1337,8 @@ class ArtistELORanker:
         self.elo_system.save(ELO_RATINGS_FILE)
 
         # Update active pool (rotate losers, introduce new artists)
-        rotated_out, rotated_in = self.artist_manager.process_result(winners, losers)
+        with POOL_LOCK:
+            rotated_out, rotated_in = self.artist_manager.process_result(winners, losers)
 
         # Log rotations (most recent first)
         for artist, elo, is_returning in rotated_in:
@@ -1213,17 +1361,28 @@ class ArtistELORanker:
             prev_image_b=str(self.current_image_b) if self.current_image_b else None,
             prev_artists_a=self.current_artists_a.copy(),
             prev_artists_b=self.current_artists_b.copy(),
+            prev_pair=self.current_pair,
         )
         self.selection_made = True
 
-        # Record history
+        # Record history with everything needed to reproduce the round
+        pair = self.current_pair
         record = ComparisonRecord(
             timestamp=time.time(),
             artists_a=self.current_artists_a,
             artists_b=self.current_artists_b,
             winner=winner,
             image_a_path=str(self.current_image_a) if self.current_image_a else "",
-            image_b_path=str(self.current_image_b) if self.current_image_b else ""
+            image_b_path=str(self.current_image_b) if self.current_image_b else "",
+            prompt_a=pair.prompt_a if pair else None,
+            prompt_b=pair.prompt_b if pair else None,
+            base_prompt=pair.base_prompt if pair else self.current_prompt,
+            negative_prompt=pair.negative_prompt if pair else None,
+            quality_toggle=pair.quality_toggle if pair else None,
+            uc_preset=pair.uc_preset if pair else None,
+            seed_a=pair.seed_a if pair else None,
+            seed_b=pair.seed_b if pair else None,
+            model_id=pair.model_id if pair else MODEL_ID,
         )
         self.history.add_record(record)
 
@@ -1281,7 +1440,8 @@ class ArtistELORanker:
 
         # Restore rotated out artists to pool
         if state.rotated_out:
-            self.artist_manager.restore_artists(state.rotated_out)
+            with POOL_LOCK:
+                self.artist_manager.restore_artists(state.rotated_out)
 
         # Remove last history record
         if self.history.records:
@@ -1293,6 +1453,7 @@ class ArtistELORanker:
         self.current_image_b = Path(state.prev_image_b) if state.prev_image_b else None
         self.current_artists_a = state.prev_artists_a.copy()
         self.current_artists_b = state.prev_artists_b.copy()
+        self.current_pair = state.prev_pair
 
         # Clear undo state and reset selection
         self.last_undo_state = None
@@ -1401,30 +1562,16 @@ class ArtistELORanker:
 
             # Event handlers
             def on_generate(prompt, negative_prompt, quality_tags, uc_preset):
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt, quality_tags, uc_preset))
-                    # Add artist display text and history to result
-                    artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
-                    artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
-                    history_text = self.format_recent_history()
-                    return result + (artists_a_text, artists_b_text, history_text)
-                finally:
-                    loop.close()
+                result = self.generate_new_comparison(prompt, negative_prompt, quality_tags, uc_preset)
+                # Add artist display text and history to result
+                artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
+                artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
+                history_text = self.format_recent_history()
+                return result + (artists_a_text, artists_b_text, history_text)
 
             def on_pick_then_generate(prompt, negative_prompt, quality_tags, uc_preset):
-                """Generate new comparison after pick (for chaining)."""
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result = loop.run_until_complete(self.generate_new_comparison(prompt, negative_prompt, quality_tags, uc_preset))
-                    artists_a_text = f"**Artists:** {', '.join(self.current_artists_a)}"
-                    artists_b_text = f"**Artists:** {', '.join(self.current_artists_b)}"
-                    history_text = self.format_recent_history()
-                    return result + (artists_a_text, artists_b_text, history_text)
-                finally:
-                    loop.close()
+                """Show the next comparison after a pick (for chaining)."""
+                return on_generate(prompt, negative_prompt, quality_tags, uc_preset)
 
             def on_export():
                 """Export leaderboard as downloadable CSV file."""
@@ -1562,6 +1709,7 @@ class ArtistELORanker:
 
 def main():
     """Main entry point."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     print("Starting Artist ELO Ranker...")
     print(f"Artist tags file: {ARTIST_TAGS_FILE}")
     print(f"ELO ratings file: {ELO_RATINGS_FILE}")

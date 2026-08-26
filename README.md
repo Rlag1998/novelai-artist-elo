@@ -223,6 +223,14 @@ Ratings describe how artist tags perform on the model that produced the images. 
 
 **Implementation note.** `novelai-python` 0.7.12, the latest release, predates V5 and has no enum entry for it. Handing the V5 id straight to the library produces a request in the old pre-V4 format, without the `v4_prompt` and `v4_negative_prompt` fields. V5 uses the same request format as V4.5, so the ranker builds each request as V4.5 Full and swaps the model id in before sending. This lives in `build_generation()` in `artist_elo_ranker.py` and is covered by `tests/test_model_v5.py`. Once the library learns the V5 id, the swap is skipped automatically.
 
+## How a Round Works
+
+- **Shared seed.** Both images in a round start from the same seed, so composition luck is removed and the artist tags are the only variable. Set `NAI_SEED_MODE=independent` for the old behaviour.
+- **Prefetch.** While you judge the current pair, the next one is already rendering. Change the prompt or presets and the prefetched pair is discarded and a fresh one generated. NovelAI serves one generation per account at a time, so the app never runs two at once.
+- **Retries.** A 429 from NovelAI means another generation is already running on your account, for example in another app. The ranker waits and retries up to three times. Errors are logged with their type, code and message.
+- **History.** Every comparison in `comparison_history.json` records both prompts, the base prompt, negative prompt, preset, quality toggle, both seeds and the model, so any round can be reproduced.
+- **Side bias.** The stats panel shows how often image A wins. Over many rounds that should sit near 50%. If it drifts, your eye has a habit.
+
 ## Configuration
 
 All configuration is done via environment variables in the `.env` file:
@@ -231,6 +239,7 @@ All configuration is done via environment variables in the `.env` file:
 |----------|---------|-------------|
 | `NOVELAI_API_KEY` | (required) | Your NovelAI API token |
 | `NAI_MODEL` | nai-diffusion-5-full | NovelAI model id used for generation. See [Image Model](#image-model). |
+| `NAI_SEED_MODE` | shared | `shared`: both images in a round use the same seed, so only the artists differ. `independent`: a fresh seed for each image. |
 | `NAI_STEPS` | 28 | Number of diffusion steps |
 | `NAI_IMG_WIDTH` | 1024 | Image width in pixels |
 | `NAI_IMG_HEIGHT` | 1024 | Image height in pixels |
@@ -271,7 +280,7 @@ The application creates/uses several JSON files:
 |------|---------|
 | `artist_elo_ratings.json` | ELO ratings and comparison counts |
 | `active_pool.json` | Current 150-artist active pool |
-| `comparison_history.json` | Full history of all comparisons |
+| `comparison_history.json` | Full history of all comparisons, including prompts, seeds, preset and model per round |
 
 These files are automatically created on first run and persist your rankings across sessions.
 

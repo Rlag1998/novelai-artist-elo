@@ -58,6 +58,11 @@ IMG_HEIGHT = int(os.getenv("NAI_IMG_HEIGHT", "1024"))
 # another model, for example nai-diffusion-4-5-full.
 MODEL_ID = os.getenv("NAI_MODEL", "nai-diffusion-5-full")
 
+# Seed handling for the two images of a round. "shared" gives both images the
+# same seed so only the artist tags differ, which removes composition luck from
+# the comparison. "independent" restores the old behaviour of a fresh seed each.
+SEED_MODE = os.getenv("NAI_SEED_MODE", "shared").strip().lower()
+
 
 # --------------------------------------------------------------------------------
 # ELO System Parameters
