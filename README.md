@@ -13,7 +13,10 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 - **Smart Rotation**: Low performers are probabilistically rotated out; high ELO artists are more likely to return
 - **Win Rate Statistics**: Track solo, duo, and trio performance for each artist
 - **Undo Support**: Revert the last comparison if you change your mind
-- **Keyboard Shortcuts**: Quick voting with `1`, `2`, `s` (skip), and `0` (undo)
+- **Keyboard Shortcuts**: Quick voting with `1`, `2`, `3` (same), `s` (skip), and `0` (undo)
+- **Draws**: "Same" records a draw. Zero-sum: the favourite gives up exactly what the underdog gains
+- **Uncertainty-aware ratings**: a TrueSkill layer (μ ± σ per artist) beside the ELO shows how settled each rating is
+- **Pairing experiments**: an opt-in TrueSkill matchmaker, with a simulation script showing why it is off by default
 - **Custom Prompts**: Use your own positive and negative prompts
 - **Generation Settings**: Toggle quality tags, choose from 5 UC (Undesired Content) presets including "None"
 - **Export to CSV**: Download full leaderboard with detailed stats
@@ -82,10 +85,12 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
    ![Comparison View](screenshots/picker.png)
 
    - Click "Pick Image A" or "Pick Image B" to vote for your preferred image
+   - Click "Same (draw)" when you cannot separate them. Unlike Skip, a draw is information: two artists that draw are close.
    - Use keyboard shortcuts for faster voting:
      - `1` - Pick Image A
      - `2` - Pick Image B
-     - `s` - Skip (no ELO changes, generates new pair)
+     - `3` - Same (draw)
+     - `s` - Skip (no rating changes, generates new pair)
      - `0` - Undo last selection
 
 4. **View rankings**
@@ -98,12 +103,13 @@ A web-based blind comparison system that ranks Danbooru artist tags by generatin
 
 Each artist entry shows:
 ```
-1. artist_name 1650 — 72% (25)
+1. artist_name 1650 — 72% (25) · σ 2.9
    S:80%(5) D:70%(12) T:67%(8)
 ```
 
 - **1650** - Current ELO rating
 - **72% (25)** - Overall win rate (total comparisons)
+- **σ 2.9** - Skill uncertainty. A fresh artist starts at 8.3 and the number falls as evidence accumulates. At or below `SETTLED_SIGMA` (default 3.0) the artist counts as settled. The stats panel shows how many of the top 20 are settled.
 - **S:80%(5)** - Solo win rate: 80% when used alone (5 solo comparisons)
 - **D:70%(12)** - Duo win rate: 70% when paired with 1 other artist (12 duo comparisons)
 - **T:67%(8)** - Trio win rate: 67% when in a group of 3 artists (8 trio comparisons)
@@ -246,6 +252,10 @@ All configuration is done via environment variables in the `.env` file:
 | `ELO_DEFAULT` | 1500 | Starting ELO for new artists |
 | `ELO_K_FACTOR` | 32 | ELO K-factor (rating volatility) |
 | `POOL_SIZE` | 150 | Active pool size |
+| `MATCHMAKING` | random | `random`: the pool's own weighting. `skill` (experimental): side B chosen by TrueSkill match quality. See [Skill Layer](#skill-layer-and-pair-selection). |
+| `MATCH_CANDIDATES` | 30 | Candidate combinations sampled per round in `skill` mode |
+| `EXPLORE_RATE` | 0.2 | Share of rounds kept fully random so the matchmaker cannot lock in |
+| `SETTLED_SIGMA` | 3.0 | Skill uncertainty at or below which an artist counts as settled |
 | `SERVER_HOST` | 127.0.0.1 | Server bind address |
 | `SERVER_PORT` | 7860 | Server port |
 | `DEFAULT_PROMPT` | (built-in) | Default positive prompt. Use `{artist_placeholder}` for artist tags. Wrap in quotes. |
@@ -261,7 +271,20 @@ The system uses an individual-based ELO calculation:
 4. **Zero-Sum**: Total ELO gained equals total ELO lost (scaled for fairness)
 5. **Pool Rotation**: Underperformers may be rotated out; high-ELO artists are more likely to return
 
-**Note:** If the same artist appears on both sides of a comparison, they are excluded from ELO changes (they can't win or lose against themselves). Skipping a comparison also results in no ELO changes.
+**Draws.** "Same" scores 0.5 to each side. Each artist's change is K × (0.5 − expected score against the other side's average), and side B is scaled so the two sides' changes sum to exactly zero. A draw between equals changes nothing. A draw between unequals pulls the favourite down and the underdog up by the same amount.
+
+**Note:** If the same artist appears on both sides of a comparison, they are excluded from rating changes (they can't win or lose against themselves). Skipping a comparison results in no rating changes.
+
+### Skill Layer and Pair Selection
+
+The ELO is the canonical, zero-sum leaderboard. Beside it, `skill.py` keeps a TrueSkill rating per artist: a mean μ and an uncertainty σ. Bayesian ratings are not conserved quantities, so this layer never replaces the ELO. It does two jobs:
+
+1. **Confidence.** σ shows how settled each artist's rating is, on the leaderboard and in the CSV export (`Skill_Mu`, `Skill_Sigma`).
+2. **Pairing (experimental, off by default).** With `MATCHMAKING=skill`, side A is drawn from the pool as before, then `MATCH_CANDIDATES` candidate combinations are sampled and the one with the highest TrueSkill match quality becomes side B. One round in five (`EXPLORE_RATE`) stays fully random.
+
+   It is off by default because it did not earn its place. `scripts/simulate_pairing.py` runs the real selection code against a population with known quality and a noisy judge. Across 10 seeds, 60 artists and 300 rounds, quality matchmaking recovered the true ranking worse than the default at every judge-noise level tested (Spearman on the ELO: 0.61 vs 0.69 with a very noisy judge, 0.72 vs 0.81 noisy, 0.80 vs 0.87 consistent, 0.82 vs 0.89 near-perfect). Evenly matched pairs are close to coin flips, so they teach little about the global order. Favouring under-compared artists, which the pool weighting already does, was best or tied everywhere. Run the script to reproduce or to test a criterion of your own via `ArtistTagManager.match_score`.
+
+Teams of 1 to 3 artists use partial-play weights of 1/n, so a trio has no structural advantage over a solo. Artists on both sides are neutral. The skill file is rebuilt from `comparison_history.json` the first time the app starts without one, so existing histories count immediately.
 
 ### Pool Rotation Strategy
 
@@ -281,6 +304,7 @@ The application creates/uses several JSON files:
 | `artist_elo_ratings.json` | ELO ratings and comparison counts |
 | `active_pool.json` | Current 150-artist active pool |
 | `comparison_history.json` | Full history of all comparisons, including prompts, seeds, preset and model per round |
+| `artist_skill.json` | TrueSkill μ and σ per artist. Rebuilt from the history if missing |
 
 These files are automatically created on first run and persist your rankings across sessions.
 
@@ -290,6 +314,7 @@ These files are automatically created on first run and persist your rankings acr
 novelai-artist-elo/
 ├── artist_elo_ranker.py      # Main application
 ├── config.py                 # Configuration management
+├── skill.py                  # TrueSkill layer: uncertainty and match quality
 ├── requirements.txt          # Python dependencies
 ├── requirements-dev.txt      # Test dependencies
 ├── tests/                    # Pytest suite
@@ -302,6 +327,7 @@ novelai-artist-elo/
 ├── danbooru_artist_tags_v4.5.txt  # Artist tags (you provide)
 ├── comparison_images/       # Generated images (auto-created)
 ├── artist_elo_ratings.json  # ELO data (auto-created)
+├── artist_skill.json        # Skill data (auto-created)
 ├── active_pool.json         # Pool data (auto-created)
 └── comparison_history.json  # History (auto-created)
 ```

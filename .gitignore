@@ -43,6 +43,7 @@ comparison_images/
 artist_elo_ratings.json
 active_pool.json
 comparison_history.json
+artist_skill.json
 
 # OS files
 .DS_Store

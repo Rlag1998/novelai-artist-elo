@@ -29,7 +29,9 @@ def _skill():
 
 
 def test_matchmaking_defaults():
-    assert config.MATCHMAKING == "skill"
+    # "skill" stays opt-in: in simulation it recovered the ranking worse than
+    # the pool's own weighting (see scripts/simulate_pairing.py).
+    assert config.MATCHMAKING == "random"
     assert 0 < config.EXPLORE_RATE < 1
     assert config.MATCH_CANDIDATES >= 10
 
