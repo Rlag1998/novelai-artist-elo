@@ -14,6 +14,7 @@ import random
 import re
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, List, NamedTuple, Optional, Tuple
@@ -24,6 +25,8 @@ from pydantic import SecretStr
 from novelai_python import GenerateImageInfer, ImageGenerateResp, ApiCredential
 from novelai_python.sdk.ai.generate_image import Model, Sampler, UCPreset
 
+from skill import SkillSystem
+
 # Import configuration
 from config import (
     get_api_key,
@@ -32,6 +35,11 @@ from config import (
     COMPARISON_IMAGES_DIR,
     COMPARISON_HISTORY_FILE,
     ACTIVE_POOL_FILE,
+    SKILL_FILE,
+    SETTLED_SIGMA,
+    MATCHMAKING,
+    MATCH_CANDIDATES,
+    EXPLORE_RATE,
     MODEL_ID,
     SEED_MODE,
     STEPS,
@@ -179,13 +187,15 @@ class ELOSystem:
         """Calculate expected score for player A against player B."""
         return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
 
-    def update_ratings(self, winners: List[str], losers: List[str]):
+    def update_ratings(self, winners: List[str], losers: List[str], draw: bool = False):
         """
         Update ELO ratings after a comparison.
         Uses INDIVIDUAL-based calculation: each artist's gain/loss is based on
         their own ELO vs the opposing team's average (not team vs team).
 
-        Scaled to maintain zero-sum: total ELO gained = total ELO lost.
+        Scaled to maintain zero-sum: total ELO gained = total ELO lost. For a
+        draw both sides score 0.5, so the favourite gives up exactly what the
+        underdog gains.
         """
         # Find overlapping artists (they're neutral - no ELO change)
         overlap = set(winners) & set(losers)
@@ -197,6 +207,10 @@ class ELOSystem:
 
         if not actual_winners or not actual_losers:
             self.comparison_count += 1
+            return
+
+        if draw:
+            self._apply_draw(winners, losers, actual_winners, actual_losers)
             return
 
         # Get opposing team averages for individual calculations
@@ -239,6 +253,26 @@ class ELOSystem:
             self.ratings[artist] = self.get_rating(artist) + scaled_change
             self.artist_comparisons[artist] = self.artist_comparisons.get(artist, 0) + 1
 
+        self.comparison_count += 1
+
+    def _apply_draw(self, side_a: List[str], side_b: List[str], a: List[str], b: List[str]):
+        """Draw: each artist scores 0.5 against the other side's average. Side B is
+        scaled so the two sides' changes sum to exactly zero."""
+        avg_a = self.get_combined_rating(side_a)
+        avg_b = self.get_combined_rating(side_b)
+        changes_a = [(x, K_FACTOR * (0.5 - self.calculate_expected_score(self.get_rating(x), avg_b))) for x in a]
+        changes_b = [(x, K_FACTOR * (0.5 - self.calculate_expected_score(self.get_rating(x), avg_a))) for x in b]
+        sum_a = sum(c for _, c in changes_a)
+        sum_b = sum(c for _, c in changes_b)
+        if sum_b != 0:
+            scale = -sum_a / sum_b
+            changes_b = [(x, c * scale) for x, c in changes_b]
+        elif sum_a != 0:
+            share = -sum_a / len(changes_b)
+            changes_b = [(x, share) for x, _ in changes_b]
+        for x, c in changes_a + changes_b:
+            self.ratings[x] = self.get_rating(x) + c
+            self.artist_comparisons[x] = self.artist_comparisons.get(x, 0) + 1
         self.comparison_count += 1
 
     def get_top_artists(self, n: int = 50) -> List[Tuple[str, float, int]]:
@@ -560,6 +594,11 @@ class ArtistTagManager:
         self.artists: List[str] = []
         self.elo_system = elo_system
         self.active_pool: Optional[ActivePool] = None
+        # Skill-based pair selection (see attach_skill)
+        self.skill_system: Optional[SkillSystem] = None
+        self.matchmaking: str = MATCHMAKING
+        self.match_candidates: int = MATCH_CANDIDATES
+        self.explore_rate: float = EXPLORE_RATE
         self.load_artists()
 
     def load_artists(self):
@@ -587,6 +626,49 @@ class ArtistTagManager:
             return []
         num_artists = random.randint(min_artists, max_artists)
         return random.sample(self.artists, min(num_artists, len(self.artists)))
+
+    def attach_skill(self, skill_system: SkillSystem, mode: str = None, candidates: int = None, explore_rate: float = None):
+        """Enable skill-based opponent selection."""
+        self.skill_system = skill_system
+        if mode is not None:
+            self.matchmaking = mode
+        if candidates is not None:
+            self.match_candidates = candidates
+        if explore_rate is not None:
+            self.explore_rate = explore_rate
+
+    def _different_random(self, team_a: List[str], min_artists: int, max_artists: int) -> List[str]:
+        cand = self.get_random_combination(min_artists, max_artists)
+        for _ in range(50):
+            if set(cand) != set(team_a):
+                break
+            cand = self.get_random_combination(min_artists, max_artists)
+        return cand
+
+    def get_opponent(self, team_a: List[str], min_artists: int = 1, max_artists: int = 3) -> List[str]:
+        """
+        Choose side B for a round. In "skill" mode, sample candidate combinations
+        and keep the one with the highest TrueSkill match quality, so rounds are
+        spent where the outcome is least certain. A share of rounds
+        (explore_rate) stays fully random so the matchmaker cannot lock in.
+        """
+        use_skill = (self.skill_system is not None and self.matchmaking == "skill"
+                     and random.random() >= self.explore_rate)
+        if not use_skill:
+            return self._different_random(team_a, min_artists, max_artists)
+        best, best_score = None, float("-inf")
+        for _ in range(self.match_candidates):
+            cand = self.get_random_combination(min_artists, max_artists)
+            if not cand or set(cand) == set(team_a):
+                continue
+            score = self.match_score(team_a, cand)
+            if score > best_score:
+                best, best_score = cand, score
+        return best if best is not None else self._different_random(team_a, min_artists, max_artists)
+
+    def match_score(self, team_a: List[str], cand: List[str]) -> float:
+        """Higher is a better opponent. Default: TrueSkill match quality."""
+        return self.skill_system.quality(team_a, cand)
 
     def process_result(self, winners: List[str], losers: List[str]) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float, bool]]]:
         """Process comparison result to update the active pool. Returns (rotated_out, rotated_in)."""
@@ -782,14 +864,11 @@ async def generate_comparison_pair(
     """
     seed_mode = (seed_mode or SEED_MODE).lower()
 
-    # Two different artist combinations (overlap is allowed, handled in ELO calc)
+    # Side A is drawn from the pool; side B is matched to it (overlap is allowed,
+    # handled in the rating updates)
     with POOL_LOCK:
         artists_a = artist_manager.get_random_combination()
-        artists_b = artist_manager.get_random_combination()
-        attempts = 0
-        while set(artists_a) == set(artists_b) and attempts < 50:
-            artists_b = artist_manager.get_random_combination()
-            attempts += 1
+        artists_b = artist_manager.get_opponent(artists_a)
 
     prompt_a = insert_artist_tags(base_prompt, artist_manager.format_artist_tags(artists_a))
     prompt_b = insert_artist_tags(base_prompt, artist_manager.format_artist_tags(artists_b))
@@ -802,9 +881,10 @@ async def generate_comparison_pair(
         while seed_b == seed_a:
             seed_b = new_seed()
 
-    timestamp = int(time.time() * 1000)
-    path_a = output_dir / f"compare_{timestamp}_a.png"
-    path_b = output_dir / f"compare_{timestamp}_b.png"
+    # Timestamp plus a short random suffix: two rounds can start in the same millisecond
+    stamp = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
+    path_a = output_dir / f"compare_{stamp}_a.png"
+    path_b = output_dir / f"compare_{stamp}_b.png"
 
     logger.info("Generating image A with artists %s (seed %s)", artists_a, seed_a)
     if not await generate_image(session, prompt_a, path_a, negative_prompt, quality_toggle, uc_preset, seed=seed_a):
@@ -989,7 +1069,7 @@ class ComparisonHistory:
             for artist in artists_a:
                 if artist not in stats:
                     stats[artist] = {
-                        'rounds': 0, 'wins': 0,
+                        'rounds': 0, 'wins': 0, 'draws': 0,
                         'solo': {'rounds': 0, 'wins': 0},
                         'duo': {'rounds': 0, 'wins': 0},
                         'trio': {'rounds': 0, 'wins': 0}
@@ -998,6 +1078,8 @@ class ComparisonHistory:
                 won = (winner == "A")
                 if won:
                     stats[artist]['wins'] += 1
+                if winner == "draw":
+                    stats[artist]['draws'] += 1
 
                 # Track by group size
                 size_key = {1: 'solo', 2: 'duo', 3: 'trio'}.get(size_a, 'trio')
@@ -1009,7 +1091,7 @@ class ComparisonHistory:
             for artist in artists_b:
                 if artist not in stats:
                     stats[artist] = {
-                        'rounds': 0, 'wins': 0,
+                        'rounds': 0, 'wins': 0, 'draws': 0,
                         'solo': {'rounds': 0, 'wins': 0},
                         'duo': {'rounds': 0, 'wins': 0},
                         'trio': {'rounds': 0, 'wins': 0}
@@ -1018,6 +1100,8 @@ class ComparisonHistory:
                 won = (winner == "B")
                 if won:
                     stats[artist]['wins'] += 1
+                if winner == "draw":
+                    stats[artist]['draws'] += 1
 
                 # Track by group size
                 size_key = {1: 'solo', 2: 'duo', 3: 'trio'}.get(size_b, 'trio')
@@ -1046,6 +1130,7 @@ class UndoState:
     prev_artists_a: List[str] = field(default_factory=list)
     prev_artists_b: List[str] = field(default_factory=list)
     prev_pair: Optional["ComparisonPair"] = None
+    old_skill: dict = field(default_factory=dict)  # artist -> (mu, sigma)
 
 
 class ArtistELORanker:
@@ -1058,6 +1143,15 @@ class ArtistELORanker:
         self.artist_manager.initialize_pool(self.elo_system)
         self.history = ComparisonHistory(COMPARISON_HISTORY_FILE)
         self.session: Optional[ApiCredential] = None
+
+        # Uncertainty-aware skill layer beside the ELO. First run with an existing
+        # history rebuilds it from every recorded comparison.
+        self.skill = SkillSystem.load(SKILL_FILE)
+        if not self.skill.ratings and self.history.records:
+            applied = self.skill.rebuild_from_records(self.history.records)
+            self.skill.save()
+            logger.info("Built skill ratings from %d recorded comparisons", applied)
+        self.artist_manager.attach_skill(self.skill)
 
         # Current comparison state
         self.current_image_a: Optional[Path] = None
@@ -1109,7 +1203,7 @@ class ArtistELORanker:
         )
         artist_stats = self.history.get_artist_stats()
 
-        lines = ["Rank,Artist,ELO,Comparisons,Wins,Losses,WinRate,Solo_Rounds,Solo_Wins,Solo_WR,Duo_Rounds,Duo_Wins,Duo_WR,Trio_Rounds,Trio_Wins,Trio_WR"]
+        lines = ["Rank,Artist,ELO,Comparisons,Wins,Losses,WinRate,Solo_Rounds,Solo_Wins,Solo_WR,Duo_Rounds,Duo_Wins,Duo_WR,Trio_Rounds,Trio_Wins,Trio_WR,Skill_Mu,Skill_Sigma"]
 
         for rank, (artist, rating) in enumerate(sorted_artists, 1):
             comparisons = self.elo_system.get_artist_comparison_count(artist)
@@ -1128,7 +1222,7 @@ class ArtistELORanker:
             duo_wr = (duo['wins'] / duo['rounds'] * 100) if duo['rounds'] > 0 else 0
             trio_wr = (trio['wins'] / trio['rounds'] * 100) if trio['rounds'] > 0 else 0
 
-            lines.append(f"{rank},{artist},{rating:.0f},{comparisons},{wins},{losses},{win_rate:.1f},{solo['rounds']},{solo['wins']},{solo_wr:.1f},{duo['rounds']},{duo['wins']},{duo_wr:.1f},{trio['rounds']},{trio['wins']},{trio_wr:.1f}")
+            lines.append(f"{rank},{artist},{rating:.0f},{comparisons},{wins},{losses},{win_rate:.1f},{solo['rounds']},{solo['wins']},{solo_wr:.1f},{duo['rounds']},{duo['wins']},{duo_wr:.1f},{trio['rounds']},{trio['wins']},{trio_wr:.1f},{self.skill.mu_of(artist):.2f},{self.skill.sigma_of(artist):.2f}")
 
         return "\n".join(lines)
 
@@ -1144,6 +1238,10 @@ class ArtistELORanker:
             winner = record.get("winner", "?")
             artists_a = record.get("artists_a", [])
             artists_b = record.get("artists_b", [])
+
+            if winner == "draw":
+                lines.append(f"{i}. **{', '.join(artists_a)}** drew with **{', '.join(artists_b)}**")
+                continue
 
             winner_artists = artists_a if winner == "A" else artists_b
             loser_artists = artists_b if winner == "A" else artists_a
@@ -1192,7 +1290,7 @@ class ArtistELORanker:
 
                 wr_breakdown = f" {' '.join(wr_parts)}" if wr_parts else ""
 
-                lines.append(f"{i}. **{artist}** {rating:.0f} — {wr:.0f}% ({rounds})")
+                lines.append(f"{i}. **{artist}** {rating:.0f} — {wr:.0f}% ({rounds}) · σ {self.skill.sigma_of(artist):.1f}")
                 if wr_breakdown.strip():
                     lines.append(f"   {wr_breakdown.strip()}")
 
@@ -1202,7 +1300,10 @@ class ArtistELORanker:
         lines.append(f"**Comparisons:** {self.elo_system.comparison_count}  ")
         lines.append(f"**Artists rated:** {len(self.elo_system.ratings)}  ")
         lines.append(f"**Pool:** {pool_stats.get('size', 0)}/{pool_stats.get('total_artists', 0)}  ")
-        lines.append(format_side_bias(self.history.get_side_bias()))
+        lines.append(format_side_bias(self.history.get_side_bias()) + "  ")
+        top20 = top_artists[:20]
+        settled = sum(1 for artist, _, _ in top20 if self.skill.settled(artist))
+        lines.append(f"**Top 20 settled:** {settled}/{len(top20)} (σ ≤ {SETTLED_SIGMA:g})")
 
         # Pool health breakdown
         lines.append("")
@@ -1321,7 +1422,8 @@ class ArtistELORanker:
                 gr.update(interactive=True),
             )
 
-        if winner == "A":
+        is_draw = winner == "draw"
+        if winner == "A" or is_draw:
             winners = self.current_artists_a
             losers = self.current_artists_b
         else:
@@ -1331,10 +1433,13 @@ class ArtistELORanker:
         # Save state for undo BEFORE making changes
         old_ratings = {a: self.elo_system.get_rating(a) for a in winners + losers}
         old_comparisons = {a: self.elo_system.get_artist_comparison_count(a) for a in winners + losers}
+        old_skill = self.skill.snapshot(winners + losers)
 
-        # Update ELO ratings
-        self.elo_system.update_ratings(winners, losers)
+        # Update ELO ratings (zero-sum, draws included) and the skill layer
+        self.elo_system.update_ratings(winners, losers, draw=is_draw)
         self.elo_system.save(ELO_RATINGS_FILE)
+        self.skill.update(self.current_artists_a, self.current_artists_b, winner)
+        self.skill.save()
 
         # Update active pool (rotate losers, introduce new artists)
         with POOL_LOCK:
@@ -1362,6 +1467,7 @@ class ArtistELORanker:
             prev_artists_a=self.current_artists_a.copy(),
             prev_artists_b=self.current_artists_b.copy(),
             prev_pair=self.current_pair,
+            old_skill=old_skill,
         )
         self.selection_made = True
 
@@ -1387,18 +1493,19 @@ class ArtistELORanker:
         self.history.add_record(record)
 
         # Format result message
-        winner_artists = ", ".join(winners)
-        loser_artists = ", ".join(losers)
-        result_msg = f"**Winner:** {winner_artists}\n**Loser:** {loser_artists}"
+        if is_draw:
+            result_msg = f"**Draw:** {', '.join(self.current_artists_a)} vs {', '.join(self.current_artists_b)}"
+        else:
+            result_msg = f"**Winner:** {', '.join(winners)}\n**Loser:** {', '.join(losers)}"
 
         # Show artist details
         details = "### Artist Details\n"
         details += f"**Image A artists:** {', '.join(self.current_artists_a)}\n"
         details += f"**Image B artists:** {', '.join(self.current_artists_b)}\n\n"
-        details += "**Updated ELO ratings:**\n"
+        details += "**Updated ratings (ELO · skill μ ± σ):**\n"
         for artist in winners + losers:
-            rating = self.elo_system.get_rating(artist)
-            details += f"- {artist}: {rating:.0f}\n"
+            details += (f"- {artist}: {self.elo_system.get_rating(artist):.0f} · "
+                        f"{self.skill.mu_of(artist):.1f} ± {self.skill.sigma_of(artist):.1f}\n")
 
         return (
             result_msg,
@@ -1437,6 +1544,11 @@ class ArtistELORanker:
         # Decrement total comparison count
         self.elo_system.comparison_count -= 1
         self.elo_system.save(ELO_RATINGS_FILE)
+
+        # Restore skill ratings
+        if state.old_skill:
+            self.skill.restore(state.old_skill)
+            self.skill.save()
 
         # Restore rotated out artists to pool
         if state.rotated_out:
@@ -1480,7 +1592,7 @@ class ArtistELORanker:
                 "Compare images generated with different artist combinations. "
                 "Pick your preferred image to update ELO ratings. "
                 "The artist tags are hidden during comparison for unbiased selection.  \n"
-                "**Shortcuts:** `1` = Pick A, `2` = Pick B, `s` = Skip, `0` = Undo"
+                "**Shortcuts:** `1` = Pick A, `2` = Pick B, `3` = Same, `s` = Skip, `0` = Undo"
             )
 
             with gr.Row():
@@ -1540,6 +1652,7 @@ class ArtistELORanker:
                     # Show artists toggle, skip, and undo buttons
                     with gr.Row():
                         show_artists_toggle = gr.Checkbox(label="Show artist tags", value=False)
+                        same_btn = gr.Button("Same (draw)", variant="secondary", size="sm")
                         skip_btn = gr.Button("Skip", variant="secondary", size="sm")
                         undo_btn = gr.Button("Undo Last Selection", variant="stop", size="sm", interactive=False)
 
@@ -1630,6 +1743,19 @@ class ArtistELORanker:
                 outputs=[export_file]
             )
 
+            # Same: record a draw (zero-sum ELO, TrueSkill draw), then next pair, then refresh CSV
+            same_btn.click(
+                fn=lambda: self.pick_winner("draw"),
+                outputs=[result_msg, details_msg, leaderboard, pick_a_btn, pick_b_btn, undo_btn]
+            ).then(
+                fn=on_pick_then_generate,
+                inputs=[prompt_input, negative_prompt_input, quality_toggle, uc_preset_dropdown],
+                outputs=[image_a, image_b, status_msg, leaderboard, result_msg, details_msg, pick_a_btn, pick_b_btn, undo_btn, artists_a_display, artists_b_display, history_display]
+            ).then(
+                fn=on_export,
+                outputs=[export_file]
+            )
+
             # Undo: restore previous state and images, then refresh CSV
             undo_btn.click(
                 fn=on_undo,
@@ -1689,6 +1815,8 @@ class ArtistELORanker:
                             findAndClick('Pick Image A');
                         } else if (e.key === '2') {
                             findAndClick('Pick Image B');
+                        } else if (e.key === '3') {
+                            findAndClick('Same');
                         } else if (e.key === 's' || e.key === 'S') {
                             findAndClick('Skip');
                         } else if (e.key === '0') {

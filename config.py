@@ -43,6 +43,7 @@ COMPARISON_IMAGES_DIR = SCRIPT_DIR / "comparison_images"
 ELO_RATINGS_FILE = SCRIPT_DIR / "artist_elo_ratings.json"
 COMPARISON_HISTORY_FILE = SCRIPT_DIR / "comparison_history.json"
 ACTIVE_POOL_FILE = SCRIPT_DIR / "active_pool.json"
+SKILL_FILE = SCRIPT_DIR / "artist_skill.json"
 
 
 # --------------------------------------------------------------------------------
@@ -79,6 +80,25 @@ K_FACTOR = int(os.getenv("ELO_K_FACTOR", "32"))
 ACTIVE_POOL_SIZE = int(os.getenv("POOL_SIZE", "150"))
 NEW_ARTIST_PROBABILITY = float(os.getenv("NEW_ARTIST_PROB", "0.15"))
 LOSER_ROTATION_PROBABILITY = float(os.getenv("LOSER_ROTATION_PROB", "0.4"))
+
+
+# --------------------------------------------------------------------------------
+# Skill Model and Pair Selection
+# --------------------------------------------------------------------------------
+
+# An artist counts as "settled" once its TrueSkill uncertainty (sigma) is at or
+# below this. Fresh artists start at 8.33.
+SETTLED_SIGMA = float(os.getenv("SETTLED_SIGMA", "3.0"))
+
+# "random" (default): the pool's own weighting, which favours under-compared
+# artists. "skill" is experimental: side B is chosen from sampled candidates by
+# TrueSkill match quality. In offline simulation (scripts/simulate_pairing.py)
+# "skill" recovered the true ranking worse than "random" at every judge-noise
+# level tested, so it is off by default.
+MATCHMAKING = os.getenv("MATCHMAKING", "random").strip().lower()
+MATCH_CANDIDATES = int(os.getenv("MATCH_CANDIDATES", "30"))
+# Share of rounds that stay fully random so the matchmaker cannot lock in.
+EXPLORE_RATE = float(os.getenv("EXPLORE_RATE", "0.2"))
 
 
 # --------------------------------------------------------------------------------
