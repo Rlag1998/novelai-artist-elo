@@ -6,51 +6,10 @@ prompts, undo restoring the pair, and the Gradio UI building without a server.
 All data paths are redirected to a temp directory. The network call is mocked.
 """
 import json
-import time
-
-import pytest
 
 import artist_elo_ranker as ranker
 
-FAKE_PNG = b"\x89PNG\r\n\x1a\nfake"
-
-
-class _FakeResp:
-    def __init__(self):
-        self.files = [("image_0.png", FAKE_PNG)]
-
-
-@pytest.fixture
-def app(tmp_path, monkeypatch):
-    tags = tmp_path / "tags.txt"
-    tags.write_text("\n".join(f"artist{i}" for i in range(40)) + "\n")
-    monkeypatch.setattr(ranker, "ARTIST_TAGS_FILE", tags)
-    monkeypatch.setattr(ranker, "ELO_RATINGS_FILE", tmp_path / "ratings.json")
-    monkeypatch.setattr(ranker, "COMPARISON_HISTORY_FILE", tmp_path / "history.json")
-    monkeypatch.setattr(ranker, "ACTIVE_POOL_FILE", tmp_path / "pool.json")
-    monkeypatch.setattr(ranker, "COMPARISON_IMAGES_DIR", tmp_path / "images")
-    monkeypatch.setattr(ranker, "ACTIVE_POOL_SIZE", 20)
-    monkeypatch.setenv("NOVELAI_API_KEY", "pst-test-key")
-
-    payloads = []
-
-    async def fake_request(self, session=None, **kwargs):
-        payloads.append(self.model_dump(mode="json", exclude_none=True))
-        return _FakeResp()
-
-    monkeypatch.setattr(ranker.GenerateImageInfer, "request", fake_request)
-    a = ranker.ArtistELORanker()
-    a._payloads = payloads
-    yield a
-    # Let any in-flight prefetch finish while the network mock is still in place,
-    # so no thread outlives the test and reaches the real API.
-    _wait_for_prefetch(a)
-
-
-def _wait_for_prefetch(a, timeout=10.0):
-    t = a.prefetcher._thread
-    if t is not None:
-        t.join(timeout)
+from conftest import wait_for_prefetch as _wait_for_prefetch
 
 
 def test_first_round_generates_and_second_is_served_from_prefetch(app):
@@ -81,7 +40,8 @@ def test_changing_settings_discards_the_prefetched_pair(app):
     assert "1boy, castle" in app.current_pair.prompt_a
 
 
-def test_pick_records_full_round_and_undo_restores_it(app, tmp_path):
+def test_pick_records_full_round_and_undo_restores_it(app):
+    tmp_path = app._tmp
     app.generate_new_comparison("", "", True, 0)
     pair = app.current_pair
     app.pick_winner("A")
